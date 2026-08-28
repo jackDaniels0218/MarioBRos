@@ -17,6 +17,11 @@ Including another URLconf
 from django.contrib import admin
 from django.urls import path
 
+from core import views
+
 urlpatterns = [
+    path('', views.iniciar_sesion, name='iniciar_sesion'),
+    path('admin/inicio/', views.vista_admin, name='vista_admin'),
+    path('mesero/inicio/', views.vista_mesero, name='vista_mesero'),
     path('admin/', admin.site.urls),
 ]
