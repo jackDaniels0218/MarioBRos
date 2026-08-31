@@ -1,4 +1,7 @@
+import uuid
+
 from django.db import models
+from django.utils import timezone
 
 
 # ---------------------------------------------------------------------------
@@ -199,3 +202,64 @@ class AjusteMerma(models.Model):
 
     def __str__(self):
         return f"Merma {self.id} - {self.lote}"
+
+
+class Factura(models.Model):
+    class MetodoPago(models.TextChoices):
+        EFECTIVO = 'efectivo', 'Efectivo'
+        TARJETA = 'tarjeta', 'Tarjeta'
+        TRANSFERENCIA = 'transferencia', 'Transferencia'
+        MIXTO = 'mixto', 'Mixto'
+
+    class Estado(models.TextChoices):
+        PENDIENTE = 'pendiente', 'Pendiente'
+        PAGADA = 'pagada', 'Pagada'
+        CANCELADA = 'cancelada', 'Cancelada'
+
+    numero = models.CharField(max_length=30, unique=True, blank=True, default='')
+    usuario = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='facturas')
+    cliente = models.CharField(max_length=150, blank=True)
+    fecha_hora = models.DateTimeField(auto_now_add=True)
+    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    impuesto = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    metodo_pago = models.CharField(max_length=20, choices=MetodoPago.choices, default=MetodoPago.EFECTIVO)
+    estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PAGADA)
+    observacion = models.TextField(blank=True)
+
+    class Meta:
+        verbose_name = "Factura"
+        verbose_name_plural = "Facturas"
+        ordering = ['-fecha_hora']
+
+    def save(self, *args, **kwargs):
+        if not self.numero:
+            timestamp = timezone.now().strftime('%Y%m%d%H%M%S')
+            unique = uuid.uuid4().hex[:6].upper()
+            self.numero = f'FAC-{timestamp}-{unique}'
+        super().save(*args, **kwargs)
+
+    @property
+    def subtotal_detallado(self):
+        return sum((detalle.subtotal for detalle in self.detalles.all()), 0)
+
+    def __str__(self):
+        return f"Factura {self.numero}"
+
+
+class DetalleFactura(models.Model):
+    factura = models.ForeignKey(Factura, on_delete=models.CASCADE, related_name='detalles')
+    descripcion = models.CharField(max_length=200)
+    cantidad = models.PositiveIntegerField(default=1)
+    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+
+    class Meta:
+        verbose_name = "Detalle de factura"
+        verbose_name_plural = "Detalles de factura"
+
+    @property
+    def subtotal(self):
+        return self.cantidad * self.precio_unitario
+
+    def __str__(self):
+        return f"{self.factura.numero} - {self.descripcion}"

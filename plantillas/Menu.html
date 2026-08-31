@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Menú del restaurante</title>
+    <style>
+        :root {
+            --principal: #F75E54;
+            --fondo: #f6f2f1;
+            --panel: #ffffff;
+            --texto: #2d2d2d;
+            --muted: #6d6d6d;
+            --borde: #eaded9;
+            --verde: #4caf78;
+            --naranja: #f2a552;
+            --rojo: #df5a5a;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            font-family: Arial, sans-serif;
+            background: var(--fondo);
+            color: var(--texto);
+        }
+        .layout {
+            display: flex;
+            min-height: 100vh;
+        }
+        .sidebar {
+            width: 220px;
+            background: #f2efee;
+            border-right: 1px solid var(--borde);
+            padding: 18px 14px;
+        }
+        .brand {
+            font-weight: 700;
+            margin-bottom: 24px;
+        }
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            margin-bottom: 8px;
+            border-radius: 8px;
+            color: #333;
+            text-decoration: none;
+        }
+        .nav-item.active {
+            background: rgba(247, 94, 84, 0.08);
+            color: var(--principal);
+            border: 1px solid rgba(247, 94, 84, 0.15);
+            font-weight: 700;
+        }
+        .content {
+            flex: 1;
+            padding: 30px 32px;
+        }
+        .hero {
+            background: linear-gradient(135deg, #fff5f3, #fffdfd);
+            border: 1px solid var(--borde);
+            border-radius: 14px;
+            padding: 22px 24px;
+            margin-bottom: 24px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 30px;
+        }
+        .sub {
+            margin: 8px 0 0;
+            color: var(--muted);
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 18px;
+        }
+        .card {
+            background: var(--panel);
+            border: 1px solid var(--borde);
+            border-radius: 12px;
+            padding: 18px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.02);
+        }
+        .tag {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: #ffe7df;
+            color: var(--principal);
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+        .name {
+            font-size: 18px;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+        .price {
+            color: var(--verde);
+            font-weight: 700;
+            font-size: 18px;
+        }
+        .empty {
+            color: var(--muted);
+        }
+    </style>
+</head>
+<body>
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="brand">Sazón</div>
+            <nav>
+                <a class="nav-item" href="{% url 'vista_admin' %}">◫ Inventario</a>
+                <a class="nav-item active" href="{% url 'vista_menu' %}">☰ Menú</a>
+                <a class="nav-item" href="{% url 'vista_mesero' %}">☷ Comandas</a>
+                <a class="nav-item" href="{% url 'vista_facturacion' %}">▣ Facturación</a>
+                <a class="nav-item" href="{% url 'inicio' %}">↩ Volver a inicio</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="hero">
+                <h1>Menú del restaurante</h1>
+                <p class="sub">Platos disponibles para atención y servicio.</p>
+            </div>
+
+            <div class="grid">
+                {% for plato in platos %}
+                <div class="card">
+                    <div class="tag">{{ plato.categoria|title }}</div>
+                    <div class="name">{{ plato.nombre_plato }}</div>
+                    <div class="price">${{ plato.precio_venta }}</div>
+                </div>
+                {% empty %}
+                <div class="card empty">No hay platos activos disponibles en el menú.</div>
+                {% endfor %}
+            </div>
+        </main>
+    </div>
+</body>
+</html>

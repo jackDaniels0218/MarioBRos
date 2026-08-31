@@ -1,8 +1,479 @@
 <!DOCTYPE html>
 <html lang="es">
-<head><meta charset="UTF-8"><title>Inicio administrador</title></head>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inventario</title>
+    <style>
+        :root {
+            --principal: #F75E54;
+            --principal-oscuro: #df5348;
+            --fondo: #f4f3f2;
+            --panel: #f8f7f6;
+            --superficie: #ffffff;
+            --texto: #2b2b2b;
+            --muted: #7b7b7b;
+            --borde: #e5e1df;
+            --verde: #49b17f;
+            --verde-soft: #e2f6ee;
+            --naranja: #f2a651;
+            --naranja-soft: #fff0dd;
+            --rojo: #e56a6a;
+            --rojo-soft: #fde7e7;
+            --sidebar: #f3f1f1;
+            --shadow: 0 10px 24px rgba(26, 26, 26, 0.06);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--fondo);
+            font-family: Arial, sans-serif;
+            color: var(--texto);
+        }
+
+        .app {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 220px;
+            background: var(--sidebar);
+            border-right: 1px solid var(--borde);
+            padding: 18px 16px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 8px 0 28px;
+        }
+
+        .brand-badge {
+            width: 26px;
+            height: 26px;
+            border-radius: 8px;
+            background: var(--principal);
+            color: #fff;
+            display: grid;
+            place-items: center;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .brand-text {
+            font-size: 15px;
+            font-weight: 700;
+            color: var(--texto);
+        }
+
+        .brand-sub {
+            display: block;
+            font-size: 11px;
+            color: var(--muted);
+            font-weight: 400;
+        }
+
+        .nav {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin-top: 10px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 11px 10px;
+            border-radius: 8px;
+            color: #3a3a3a;
+            font-weight: 500;
+            opacity: 0.82;
+            text-decoration: none;
+        }
+
+        .nav-item.active {
+            background: rgba(247, 94, 84, 0.08);
+            color: var(--principal);
+            border: 1px solid rgba(247, 94, 84, 0.18);
+            opacity: 1;
+            font-weight: 700;
+        }
+
+        .nav-icon {
+            font-size: 14px;
+            width: 16px;
+            text-align: center;
+        }
+
+        .content {
+            flex: 1;
+            padding: 30px 42px 40px 42px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 21px;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            margin: 6px 0 0;
+            color: var(--muted);
+            font-size: 13px;
+        }
+
+        .btn-primary {
+            border: 1px solid var(--borde);
+            background: var(--superficie);
+            color: var(--texto);
+            padding: 9px 14px;
+            border-radius: 9px;
+            font-size: 13px;
+            cursor: pointer;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 14px;
+            margin-top: 18px;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.35);
+            border: 1px solid var(--borde);
+            border-radius: 10px;
+            padding: 16px 18px 14px;
+            min-height: 88px;
+        }
+
+        .stat-label {
+            font-size: 13px;
+            color: var(--muted);
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 25px;
+            font-weight: 700;
+            color: var(--texto);
+            line-height: 1.1;
+        }
+
+        .stat-value.low { color: var(--naranja); }
+        .stat-value.alert { color: var(--rojo); }
+
+        .filters {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 14px;
+            margin: 22px 0 14px;
+        }
+
+        .search {
+            position: relative;
+            flex: 1;
+            max-width: 400px;
+        }
+
+        .search input {
+            width: 100%;
+            border: 1px solid var(--borde);
+            background: var(--superficie);
+            border-radius: 9px;
+            padding: 10px 12px 10px 38px;
+            font-size: 14px;
+            color: var(--texto);
+        }
+
+        .search::before {
+            content: '⌕';
+            position: absolute;
+            left: 12px;
+            top: 8px;
+            color: var(--muted);
+            font-size: 17px;
+        }
+
+        .filter-tabs {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .filter-tab {
+            background: #f1efee;
+            border: 1px solid var(--borde);
+            border-radius: 999px;
+            padding: 8px 14px;
+            font-size: 12px;
+            color: #5f5f5f;
+        }
+
+        .filter-tab.active {
+            background: var(--principal);
+            color: #fff;
+            border-color: var(--principal);
+        }
+
+        .table-wrap {
+            background: rgba(255,255,255,0.30);
+            border: 1px solid var(--borde);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .table-header,
+        .table-row {
+            display: grid;
+            grid-template-columns: 1.8fr 1.6fr 1.3fr 1fr 44px;
+            align-items: center;
+            gap: 10px;
+            padding: 0 18px;
+        }
+
+        .table-header {
+            height: 42px;
+            background: transparent;
+            color: #6f6f6f;
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.03em;
+            text-transform: uppercase;
+        }
+
+        .table-row {
+            min-height: 66px;
+            border-top: 1px solid var(--borde);
+            background: rgba(255,255,255,0.12);
+        }
+
+        .plate-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--texto);
+        }
+
+        .plate-category {
+            display: block;
+            margin-top: 3px;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 400;
+        }
+
+        .ingredient {
+            color: #4b4b4b;
+            font-size: 14px;
+        }
+
+        .qty-wrap {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .progress {
+            width: 100%;
+            height: 8px;
+            border-radius: 999px;
+            overflow: hidden;
+            background: #e9e3e1;
+            position: relative;
+        }
+
+        .progress > span {
+            display: block;
+            height: 100%;
+            border-radius: inherit;
+            background: var(--verde);
+        }
+
+        .progress .bajo { background: var(--naranja); }
+        .progress .agotado { background: var(--rojo); }
+
+        .qty-number {
+            min-width: 26px;
+            text-align: right;
+            font-size: 13px;
+            color: var(--texto);
+            font-weight: 700;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 92px;
+            padding: 7px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+
+        .status.disponible {
+            color: var(--verde);
+            background: var(--verde-soft);
+            border-color: rgba(73, 177, 127, 0.18);
+        }
+
+        .status.bajo {
+            color: var(--naranja);
+            background: var(--naranja-soft);
+            border-color: rgba(242, 166, 81, 0.2);
+        }
+
+        .status.agotado {
+            color: var(--rojo);
+            background: var(--rojo-soft);
+            border-color: rgba(229, 106, 106, 0.15);
+        }
+
+        .plus-btn {
+            width: 24px;
+            height: 24px;
+            border: 1px solid var(--borde);
+            color: var(--muted);
+            background: transparent;
+            border-radius: 6px;
+            font-size: 20px;
+            display: grid;
+            place-items: center;
+            margin-left: auto;
+        }
+
+        @media (max-width: 900px) {
+            .app { flex-direction: column; }
+            .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); }
+            .content { padding: 20px 18px 30px; }
+            .table-header { display: none; }
+            .table-row {
+                grid-template-columns: 1fr;
+                padding: 16px;
+                gap: 8px;
+            }
+            .filters {
+                flex-direction: column;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
 <body>
-	<h1>Vista de administrador</h1>
-	<p>Inicio de sesión correcto.</p>
+    <div class="app">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-badge">S</div>
+                <div class="brand-text">Sazón <span class="brand-sub">Secreta de cocina</span></div>
+            </div>
+
+            <nav class="nav">
+                <a class="nav-item active" href="{% url 'vista_admin' %}"><span class="nav-icon">◫</span> Inventario</a>
+                <a class="nav-item" href="{% url 'vista_menu' %}"><span class="nav-icon">☰</span> Menú</a>
+                <a class="nav-item" href="{% url 'vista_mesero' %}"><span class="nav-icon">☷</span> Comandas</a>
+                <a class="nav-item" href="{% url 'vista_facturacion' %}"><span class="nav-icon">▣</span> Facturación</a>
+                <a class="nav-item" href="{% url 'inicio' %}"><span class="nav-icon">↩</span> Volver a inicio</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="topbar">
+                <div>
+                    <h1>Inventario de platos</h1>
+                    <p class="subtitle">Porciones disponibles según cortes e insumos en cocina</p>
+                </div>
+                <button class="btn-primary" type="button">Actualizar stock</button>
+            </div>
+
+            <section class="stats">
+                <div class="stat-card">
+                    <div class="stat-label">Platos activos</div>
+                    <div class="stat-value">{{ platos_activos }}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Porciones totales disponibles</div>
+                    <div class="stat-value">{{ porciones_totales }}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Con stock bajo</div>
+                    <div class="stat-value low">{{ stock_bajo }}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Agotados</div>
+                    <div class="stat-value alert">{{ agotados }}</div>
+                </div>
+            </section>
+
+            <div class="filters">
+                <div class="search">
+                    <input type="text" placeholder="Buscar plato..." aria-label="Buscar plato" />
+                </div>
+
+                <div class="filter-tabs">
+                    <span class="filter-tab active">Todos</span>
+                    <span class="filter-tab">Fuertes</span>
+                    <span class="filter-tab">Parrilla</span>
+                    <span class="filter-tab">Mariscos</span>
+                    <span class="filter-tab">Sopas</span>
+                </div>
+            </div>
+
+            <div class="table-wrap">
+                <div class="table-header">
+                    <div>Plato</div>
+                    <div>Insumo crítico</div>
+                    <div>Porciones disponibles</div>
+                    <div>Estado</div>
+                    <div></div>
+                </div>
+
+                {% for item in inventario %}
+                <div class="table-row">
+                    <div>
+                        <div class="plate-name">{{ item.plato.nombre_plato }}</div>
+                        <span class="plate-category">{{ item.plato.categoria|title }}</span>
+                    </div>
+                    <div class="ingredient">{{ item.insumo_critico }}</div>
+                    <div class="qty-wrap">
+                        <div class="progress">
+                            {% if item.estado_clase == 'disponible' %}
+                                <span style="width: {% if item.porciones_disponibles > 30 %}100{% else %}{{ item.porciones_disponibles|default:0 }}{% endif %}%;"></span>
+                            {% elif item.estado_clase == 'bajo' %}
+                                <span class="bajo" style="width: {% if item.porciones_disponibles > 30 %}100{% else %}{{ item.porciones_disponibles|default:0 }}{% endif %}%;"></span>
+                            {% else %}
+                                <span class="agotado" style="width: 10%;"></span>
+                            {% endif %}
+                        </div>
+                        <div class="qty-number">{{ item.porciones_disponibles }}</div>
+                    </div>
+                    <div>
+                        <span class="status {{ item.estado_clase }}">{{ item.estado_titulo }}</span>
+                    </div>
+                    <button class="plus-btn" type="button">+</button>
+                </div>
+                {% empty %}
+                <div class="table-row">
+                    <div class="plate-name">No hay platos activos para mostrar.</div>
+                </div>
+                {% endfor %}
+            </div>
+        </main>
+    </div>
 </body>
 </html>

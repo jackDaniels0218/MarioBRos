@@ -2,15 +2,15 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <title>Comandas</title>
+    <title>Cajero</title>
     <style>
         :root {
             --principal: #F75E54;
-            --fondo: #f6f3f2;
+            --fondo: #f7f4f2;
             --panel: #ffffff;
             --texto: #2d2d2d;
             --muted: #6e6e6e;
-            --borde: #e8e2df;
+            --borde: #eaded9;
         }
         * { box-sizing: border-box; }
         body {
@@ -26,13 +26,13 @@
         }
         .sidebar {
             width: 220px;
-            background: #f3f1f0;
+            background: #f2efee;
             border-right: 1px solid var(--borde);
             padding: 18px 14px;
         }
         .brand {
             font-weight: 700;
-            margin-bottom: 26px;
+            margin-bottom: 24px;
         }
         .nav-item {
             display: flex;
@@ -57,8 +57,9 @@
         .card {
             background: var(--panel);
             border: 1px solid var(--borde);
-            border-radius: 12px;
+            border-radius: 14px;
             padding: 24px;
+            box-shadow: 0 6px 18px rgba(0,0,0,0.03);
         }
         h1 { margin-top: 0; }
         p { color: var(--muted); }
@@ -71,15 +72,15 @@
             <nav>
                 <a class="nav-item" href="{% url 'vista_admin' %}">◫ Inventario</a>
                 <a class="nav-item" href="{% url 'vista_menu' %}">☰ Menú</a>
-                <a class="nav-item active" href="{% url 'vista_mesero' %}">☷ Comandas</a>
-                <a class="nav-item" href="{% url 'vista_facturacion' %}">▣ Facturación</a>
+                <a class="nav-item" href="{% url 'vista_mesero' %}">☷ Comandas</a>
+                <a class="nav-item active" href="{% url 'vista_facturacion' %}">▣ Facturación</a>
                 <a class="nav-item" href="{% url 'inicio' %}">↩ Volver a inicio</a>
             </nav>
         </aside>
         <main class="content">
             <div class="card">
-                <h1>Vista de mesero</h1>
-                <p>Inicio de sesión correcto.</p>
+                <h1>Cajero</h1>
+                <p>Panel funcional para facturación y cierre de ventas.</p>
             </div>
         </main>
     </div>

@@ -8,6 +8,8 @@ from .models import (
     Comanda,
     DetalleComanda,
     AjusteMerma,
+    Factura,
+    DetalleFactura,
 )
 
 admin.site.register(Usuario)
@@ -18,3 +20,5 @@ admin.site.register(RecetaPlato)
 admin.site.register(Comanda)
 admin.site.register(DetalleComanda)
 admin.site.register(AjusteMerma)
+admin.site.register(Factura)
+admin.site.register(DetalleFactura)

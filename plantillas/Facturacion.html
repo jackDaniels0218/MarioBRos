@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Facturación</title>
+    <style>
+        :root {
+            --principal: #F75E54;
+            --principal-oscuro: #dc4b40;
+            --fondo: #f4f3f2;
+            --panel: #f7f5f4;
+            --blanco: #ffffff;
+            --texto: #2b2b2b;
+            --muted: #787878;
+            --borde: #e7e2df;
+            --verde: #4cb883;
+            --naranja: #f2ad63;
+            --rojo: #e76f6f;
+            --gris: #a7a7a7;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: var(--fondo);
+            color: var(--texto);
+        }
+
+        .app {
+            display: flex;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 220px;
+            background: var(--panel);
+            border-right: 1px solid var(--borde);
+            padding: 18px 14px;
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 28px;
+        }
+
+        .brand-badge {
+            width: 28px;
+            height: 28px;
+            border-radius: 8px;
+            background: var(--principal);
+            color: #fff;
+            display: grid;
+            place-items: center;
+            font-weight: bold;
+        }
+
+        .brand-text {
+            font-weight: 700;
+            font-size: 15px;
+        }
+
+        .brand-sub {
+            display: block;
+            font-size: 11px;
+            color: var(--muted);
+            font-weight: 400;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 12px;
+            border-radius: 8px;
+            color: #3b3b3b;
+            margin-bottom: 8px;
+            font-size: 15px;
+            opacity: 0.9;
+            text-decoration: none;
+        }
+
+        .nav-item.active {
+            background: rgba(247, 94, 84, 0.08);
+            color: var(--principal);
+            border: 1px solid rgba(247, 94, 84, 0.15);
+            font-weight: 700;
+        }
+
+        .content {
+            flex: 1;
+            padding: 30px 34px 40px;
+        }
+
+        .topbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 18px;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            color: var(--muted);
+            margin: 6px 0 0;
+            font-size: 13px;
+        }
+
+        .btn {
+            border: 1px solid var(--borde);
+            background: var(--blanco);
+            padding: 9px 14px;
+            border-radius: 9px;
+            color: var(--texto);
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .stats {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(180px, 1fr));
+            gap: 14px;
+            margin: 24px 0 18px;
+        }
+
+        .stat-card {
+            background: rgba(255,255,255,0.35);
+            border: 1px solid var(--borde);
+            border-radius: 10px;
+            padding: 16px 18px 14px;
+            min-height: 96px;
+        }
+
+        .stat-label {
+            color: var(--muted);
+            font-size: 13px;
+            margin-bottom: 8px;
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        .stat-value.green { color: var(--verde); }
+        .stat-value.orange { color: var(--naranja); }
+        .stat-value.red { color: var(--rojo); }
+
+        .panel {
+            background: rgba(255,255,255,0.25);
+            border: 1px solid var(--borde);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .panel-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 18px;
+            border-bottom: 1px solid var(--borde);
+            font-weight: 700;
+        }
+
+        .table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .table th, .table td {
+            padding: 14px 18px;
+            text-align: left;
+            border-bottom: 1px solid var(--borde);
+            font-size: 14px;
+        }
+
+        .table th {
+            color: #757575;
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            background: rgba(255,255,255,0.2);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 6px 10px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+
+        .badge.pendiente {
+            background: #fff2df;
+            color: var(--naranja);
+            border-color: rgba(242, 173, 99, 0.2);
+        }
+
+        .badge.pagada {
+            background: #e4f7ef;
+            color: var(--verde);
+            border-color: rgba(76, 184, 131, 0.2);
+        }
+
+        .badge.cancelada {
+            background: #fde9e9;
+            color: var(--rojo);
+            border-color: rgba(231, 111, 111, 0.2);
+        }
+
+        .link {
+            color: var(--principal);
+            text-decoration: none;
+            font-weight: 700;
+        }
+
+        @media (max-width: 900px) {
+            .app { flex-direction: column; }
+            .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); }
+            .content { padding: 20px 18px 30px; }
+            .stats { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="app">
+        <aside class="sidebar">
+            <div class="brand">
+                <div class="brand-badge">S</div>
+                <div class="brand-text">Sazón <span class="brand-sub">Secreta de cocina</span></div>
+            </div>
+
+            <nav>
+                <a class="nav-item" href="{% url 'vista_admin' %}"><span>◫</span> Inventario</a>
+                <a class="nav-item" href="{% url 'vista_menu' %}"><span>☰</span> Menú</a>
+                <a class="nav-item" href="{% url 'vista_mesero' %}"><span>☷</span> Comandas</a>
+                <a class="nav-item active" href="{% url 'vista_facturacion' %}"><span>▣</span> Facturación</a>
+                <a class="nav-item" href="{% url 'inicio' %}"><span>↩</span> Volver a inicio</a>
+            </nav>
+        </aside>
+
+        <main class="content">
+            <div class="topbar">
+                <div>
+                    <h1>Facturación</h1>
+                    <p class="subtitle">Control de ventas y comprobantes</p>
+                </div>
+                <button class="btn" type="button">Nueva factura</button>
+            </div>
+
+            <section class="stats">
+                <div class="stat-card">
+                    <div class="stat-label">Ventas del día</div>
+                    <div class="stat-value green">${{ total_ventas }}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Facturas recientes</div>
+                    <div class="stat-value orange">{{ facturas|length }}</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Pendientes</div>
+                    <div class="stat-value red">{{ pendientes }}</div>
+                </div>
+            </section>
+
+            <div class="panel">
+                <div class="panel-head">
+                    <span>Facturas recientes</span>
+                    <span>Últimas 10</span>
+                </div>
+
+                <table class="table">
+                    <thead>
+                        <tr>
+                            <th>Factura</th>
+                            <th>Cliente</th>
+                            <th>Fecha</th>
+                            <th>Total</th>
+                            <th>Método</th>
+                            <th>Estado</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for factura in facturas %}
+                        <tr>
+                            <td>{{ factura.numero }}</td>
+                            <td>{{ factura.cliente|default:'Cliente general' }}</td>
+                            <td>{{ factura.fecha_hora|date:'d/m/Y' }}</td>
+                            <td>${{ factura.total }}</td>
+                            <td>{{ factura.get_metodo_pago_display }}</td>
+                            <td>
+                                <span class="badge {{ factura.estado }}">{{ factura.get_estado_display }}</span>
+                            </td>
+                            <td><a class="link" href="{% url 'detalle_factura' factura.id %}">Ver</a></td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="7">No hay facturas registradas aún.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+</body>
+</html>

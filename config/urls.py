@@ -20,8 +20,14 @@ from django.urls import path
 from core import views
 
 urlpatterns = [
-    path('', views.iniciar_sesion, name='iniciar_sesion'),
+    path('', views.inicio, name='inicio'),
+    path('login/', views.iniciar_sesion, name='iniciar_sesion'),
+    path('login/<str:rol>/', views.iniciar_sesion, name='iniciar_sesion_rol'),
     path('admin/inicio/', views.vista_admin, name='vista_admin'),
+    path('menu/', views.vista_menu, name='vista_menu'),
     path('mesero/inicio/', views.vista_mesero, name='vista_mesero'),
+    path('cajero/inicio/', views.vista_cajero, name='vista_cajero'),
+    path('facturacion/', views.vista_facturacion, name='vista_facturacion'),
+    path('factura/<int:factura_id>/', views.detalle_factura, name='detalle_factura'),
     path('admin/', admin.site.urls),
 ]
