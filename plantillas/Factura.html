@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Factura</title>
+    <style>
+        :root {
+            --principal: #F75E54;
+            --fondo: #f4f3f2;
+            --blanco: #ffffff;
+            --texto: #2b2b2b;
+            --muted: #777777;
+            --borde: #e8e2df;
+            --verde: #4cb883;
+            --naranja: #f2ad63;
+            --rojo: #e76f6f;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: var(--fondo);
+            color: var(--texto);
+        }
+
+        .wrap {
+            max-width: 980px;
+            margin: 40px auto;
+            padding: 0 18px;
+        }
+
+        .card {
+            background: var(--blanco);
+            border: 1px solid var(--borde);
+            border-radius: 14px;
+            padding: 30px 26px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.04);
+        }
+
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            gap: 16px;
+            padding-bottom: 22px;
+            border-bottom: 1px solid var(--borde);
+            margin-bottom: 22px;
+        }
+
+        .brand {
+            font-weight: 700;
+            font-size: 28px;
+            color: var(--principal);
+        }
+
+        .meta {
+            text-align: right;
+            color: var(--muted);
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 18px;
+            margin-bottom: 22px;
+        }
+
+        .label {
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--muted);
+            margin-bottom: 6px;
+        }
+
+        .value {
+            font-weight: 700;
+            font-size: 16px;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 8px;
+        }
+
+        th, td {
+            padding: 12px 10px;
+            border-bottom: 1px solid var(--borde);
+            text-align: left;
+            font-size: 14px;
+        }
+
+        th {
+            color: var(--muted);
+            font-size: 12px;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .totals {
+            margin-top: 20px;
+            margin-left: auto;
+            width: 280px;
+        }
+
+        .totals-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 0;
+            font-size: 15px;
+        }
+
+        .totals-row.total {
+            font-weight: 700;
+            font-size: 22px;
+            padding-top: 12px;
+            border-top: 1px solid var(--borde);
+        }
+
+        .status {
+            display: inline-block;
+            padding: 7px 12px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 700;
+            border: 1px solid transparent;
+        }
+
+        .status.pagada {
+            background: #e4f7ef;
+            color: var(--verde);
+            border-color: rgba(76, 184, 131, 0.2);
+        }
+
+        .status.pendiente {
+            background: #fff2df;
+            color: var(--naranja);
+            border-color: rgba(242, 173, 99, 0.2);
+        }
+
+        .status.cancelada {
+            background: #fde9e9;
+            color: var(--rojo);
+            border-color: rgba(231, 111, 111, 0.2);
+        }
+
+        .back {
+            display: inline-block;
+            margin-top: 20px;
+            color: var(--principal);
+            font-weight: 700;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <div class="card">
+            <div class="header">
+                <div>
+                    <div class="brand">MarioBRos</div>
+                    <div style="margin-top: 8px; font-size: 14px; color: var(--muted);">Factura</div>
+                </div>
+                <div class="meta">
+                    <div><strong>{{ factura.numero }}</strong></div>
+                    <div>{{ factura.fecha_hora|date:'d/m/Y H:i' }}</div>
+                    <div>{{ factura.get_metodo_pago_display }}</div>
+                </div>
+            </div>
+
+            <div class="info">
+                <div>
+                    <div class="label">Cliente</div>
+                    <div class="value">{{ factura.cliente|default:'Cliente general' }}</div>
+                </div>
+                <div>
+                    <div class="label">Estado</div>
+                    <div>
+                        <span class="status {{ factura.estado }}">{{ factura.get_estado_display }}</span>
+                    </div>
+                </div>
+            </div>
+
+            <table>
+                <thead>
+                    <tr>
+                        <th>Descripción</th>
+                        <th>Cantidad</th>
+                        <th>Precio unit.</th>
+                        <th>Subtotal</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for detalle in factura.detalles.all %}
+                    <tr>
+                        <td>{{ detalle.descripcion }}</td>
+                        <td>{{ detalle.cantidad }}</td>
+                        <td>${{ detalle.precio_unitario }}</td>
+                        <td>${{ detalle.subtotal }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="4">No hay detalles para esta factura.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+
+            <div class="totals">
+                <div class="totals-row">
+                    <span>Subtotal</span>
+                    <span>${{ factura.subtotal }}</span>
+                </div>
+                <div class="totals-row">
+                    <span>Impuesto</span>
+                    <span>${{ factura.impuesto }}</span>
+                </div>
+                <div class="totals-row total">
+                    <span>Total</span>
+                    <span>${{ factura.total }}</span>
+                </div>
+            </div>
+
+            <a class="back" href="{% url 'vista_facturacion' %}">← Volver a facturación</a>
+        </div>
+    </div>
+</body>
+</html>

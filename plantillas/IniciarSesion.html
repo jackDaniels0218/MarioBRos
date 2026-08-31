@@ -10,6 +10,7 @@
             --fondo: #fff7f6;
             --texto: #2d2d2d;
             --borde: #dddddd;
+            --gris: #6b7280;
         }
 
         * { box-sizing: border-box; }
@@ -28,22 +29,36 @@
 
         .login {
             width: 100%;
-            max-width: 380px;
+            max-width: 420px;
             padding: 32px;
             background: #ffffff;
             border-top: 5px solid var(--principal);
             box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+            border-radius: 10px;
         }
 
         h1 { margin: 0 0 8px; font-size: 28px; }
-        .subtitulo { margin: 0 0 24px; color: #666666; }
+        .subtitulo { margin: 0 0 18px; color: #666666; }
+        .rol-tag {
+            display: inline-block;
+            margin-bottom: 16px;
+            background: #fff1ef;
+            color: var(--principal);
+            border: 1px solid #ffd3ce;
+            border-radius: 999px;
+            padding: 6px 10px;
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
         label { display: block; margin: 16px 0 6px; font-weight: bold; }
 
         input, select {
             width: 100%;
             padding: 12px;
             border: 1px solid var(--borde);
-            border-radius: 4px;
+            border-radius: 6px;
             font-size: 16px;
         }
 
@@ -57,7 +72,7 @@
             margin-top: 24px;
             padding: 12px;
             border: 0;
-            border-radius: 4px;
+            border-radius: 6px;
             background: var(--principal);
             color: #ffffff;
             font-size: 16px;
@@ -66,33 +81,39 @@
         }
 
         button:hover { background: #dc4e46; }
-        .error { color: #b42318; margin: 0 0 16px; }
+        .error { color: #b42318; margin: 0 0 16px; font-weight: bold; }
+        .volver {
+            display: inline-block;
+            margin-top: 16px;
+            color: var(--gris);
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .volver:hover { text-decoration: underline; }
     </style>
 </head>
 <body>
     <main class="login">
         <h1>Iniciar sesión</h1>
-        <p class="subtitulo">Ingresa tus credenciales</p>
+        <p class="subtitulo">Acceso para {{ titulo_rol }}</p>
+        <span class="rol-tag">{{ rol }}</span>
 
         {% if error %}<p class="error">{{ error }}</p>{% endif %}
 
         <form method="post">
             {% csrf_token %}
+            <input type="hidden" name="rol" value="{{ rol }}">
+
             <label for="usuario">Usuario</label>
             <input type="text" id="usuario" name="usuario" autocomplete="username" required>
 
             <label for="password">Contraseña</label>
             <input type="password" id="password" name="password" autocomplete="current-password" required>
 
-            <label for="rol">Ingresar como</label>
-            <select id="rol" name="rol" required>
-                <option value="">Selecciona un rol</option>
-                <option value="admin">Administrador</option>
-                <option value="empleado">Mesero</option>
-            </select>
-
             <button type="submit">Ingresar</button>
         </form>
+
+        <a class="volver" href="{% url 'inicio' %}">← Volver al inicio</a>
     </main>
 </body>
 </html>

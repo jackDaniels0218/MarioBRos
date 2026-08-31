@@ -1,3 +1,155 @@
-from django.test import TestCase
+from decimal import Decimal
 
-# Create your tests here.
+from django.contrib.auth.hashers import make_password
+from django.test import TestCase
+from django.urls import reverse
+
+from core.models import Factura, LoteInsumo, Plato, RecetaPlato, Usuario
+
+
+class InventarioViewTests(TestCase):
+    def setUp(self):
+        self.admin = Usuario.objects.create(
+            nombre='admin',
+            rol=Usuario.Rol.ADMIN,
+            password_hash=make_password('admin123'),
+            estado=True,
+        )
+        self.session = self.client.session
+        self.session['rol'] = Usuario.Rol.ADMIN
+        self.session.save()
+
+        self.arroz = LoteInsumo.objects.create(
+            codigo_referencia='REF-20240101-001',
+            nombre_insumo='Arroz',
+            categoria=LoteInsumo.Categoria.HARINAS,
+            precio_unitario=Decimal('12.50'),
+            cantidad_disponible=Decimal('20.00'),
+            stock_minimo=Decimal('5.00'),
+            fecha_ingreso='2024-01-01',
+            fecha_vencimiento='2024-01-30',
+        )
+        self.pollo = LoteInsumo.objects.create(
+            codigo_referencia='REF-20240102-001',
+            nombre_insumo='Pollo',
+            categoria=LoteInsumo.Categoria.CARNES,
+            precio_unitario=Decimal('35.00'),
+            cantidad_disponible=Decimal('30.00'),
+            stock_minimo=Decimal('10.00'),
+            fecha_ingreso='2024-01-02',
+            fecha_vencimiento='2024-02-05',
+        )
+
+        self.plato = Plato.objects.create(
+            nombre_plato='Arroz chino',
+            categoria='granos',
+            precio_venta=Decimal('120.00'),
+            estado=True,
+        )
+        RecetaPlato.objects.create(
+            plato=self.plato,
+            insumo=self.arroz,
+            cantidad_requerida=Decimal('10.00'),
+        )
+        RecetaPlato.objects.create(
+            plato=self.plato,
+            insumo=self.pollo,
+            cantidad_requerida=Decimal('15.00'),
+        )
+
+        self.plato_disponible = Plato.objects.create(
+            nombre_plato='Pollo a la colombiana',
+            categoria='carnes',
+            precio_venta=Decimal('180.00'),
+            estado=True,
+        )
+        RecetaPlato.objects.create(
+            plato=self.plato_disponible,
+            insumo=self.pollo,
+            cantidad_requerida=Decimal('5.00'),
+        )
+
+    def test_vista_admin_muestra_inventario(self):
+        response = self.client.get(reverse('vista_admin'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Inventario de platos')
+        self.assertContains(response, 'Platos activos')
+        self.assertContains(response, 'Arroz chino')
+        self.assertContains(response, 'Pollo a la colombiana')
+        self.assertContains(response, 'Disponible')
+        self.assertContains(response, 'Stock bajo')
+
+    def test_login_admin_desde_raiz_usa_credenciales_fijas(self):
+        response = self.client.post(
+            reverse('iniciar_sesion'),
+            {'usuario': 'admin', 'password': 'admin123'},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRedirects(response, reverse('vista_admin'))
+        self.assertContains(response, 'Inventario de platos')
+
+
+class FacturacionViewTests(TestCase):
+    def setUp(self):
+        self.admin = Usuario.objects.create(
+            nombre='admin',
+            rol=Usuario.Rol.ADMIN,
+            password_hash=make_password('admin123'),
+            estado=True,
+        )
+        self.session = self.client.session
+        self.session['rol'] = Usuario.Rol.ADMIN
+        self.session.save()
+
+    def test_vista_facturacion_carga(self):
+        response = self.client.get(reverse('vista_facturacion'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Facturación')
+        self.assertContains(response, 'Facturas recientes')
+
+    def test_detalle_factura_carga(self):
+        factura = Factura.objects.create(
+            usuario=self.admin,
+            cliente='Cliente prueba',
+            total=Decimal('325.50'),
+            metodo_pago='efectivo',
+            estado='pagada',
+        )
+
+        response = self.client.get(reverse('detalle_factura', args=[factura.id]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Factura')
+        self.assertContains(response, '325.50')
+
+    def test_vista_facturacion_tiene_navegacion_hacia_inventario(self):
+        self.session['rol'] = Usuario.Rol.ADMIN
+        self.session.save()
+
+        response = self.client.get(reverse('vista_facturacion'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, reverse('vista_admin'))
+        self.assertContains(response, reverse('inicio'))
+
+    def test_vista_cajero_carga(self):
+        self.session['rol'] = 'cajero'
+        self.session.save()
+
+        response = self.client.get(reverse('vista_cajero'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Cajero')
+
+    def test_admin_puede_acceder_a_vista_mesero(self):
+        self.session['rol'] = Usuario.Rol.ADMIN
+        self.session.save()
+
+        response = self.client.get(reverse('vista_mesero'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Vista de mesero')
