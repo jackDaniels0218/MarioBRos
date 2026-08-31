@@ -254,13 +254,17 @@
                     <h1>Facturación</h1>
                     <p class="subtitle">Control de ventas y comprobantes</p>
                 </div>
-                <button class="btn" type="button">Nueva factura</button>
+                <form method="post" style="margin:0;">
+                    {% csrf_token %}
+                    <input type="hidden" name="accion" value="crear_factura">
+                    <button class="btn" type="submit">Nueva factura</button>
+                </form>
             </div>
 
             <section class="stats">
                 <div class="stat-card">
                     <div class="stat-label">Ventas del día</div>
-                    <div class="stat-value green">${{ total_ventas }}</div>
+                    <div class="stat-value green">$ {{ total_ventas_display }}</div>
                 </div>
                 <div class="stat-card">
                     <div class="stat-label">Facturas recientes</div>
@@ -296,7 +300,7 @@
                             <td>{{ factura.numero }}</td>
                             <td>{{ factura.cliente|default:'Cliente general' }}</td>
                             <td>{{ factura.fecha_hora|date:'d/m/Y' }}</td>
-                            <td>${{ factura.total }}</td>
+                            <td>$ {{ factura.total_display }}</td>
                             <td>{{ factura.get_metodo_pago_display }}</td>
                             <td>
                                 <span class="badge {{ factura.estado }}">{{ factura.get_estado_display }}</span>
