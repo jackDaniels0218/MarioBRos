@@ -2,6 +2,7 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Cajero</title>
     <style>
         :root {
@@ -11,58 +12,61 @@
             --texto: #2d2d2d;
             --muted: #6e6e6e;
             --borde: #eaded9;
+            --verde: #4caf78;
+            --naranja: #f2a552;
+            --rojo: #d95e5e;
+            --gris: #f3f1f0;
         }
         * { box-sizing: border-box; }
         body {
-            margin: 0;
-            min-height: 100vh;
-            font-family: Arial, sans-serif;
-            background: var(--fondo);
-            color: var(--texto);
+            margin: 0; min-height: 100vh; font-family: Arial, sans-serif; background: var(--fondo); color: var(--texto);
         }
-        .layout {
-            display: flex;
-            min-height: 100vh;
-        }
+        .layout { display: flex; min-height: 100vh; }
         .sidebar {
-            width: 220px;
-            background: #f2efee;
-            border-right: 1px solid var(--borde);
-            padding: 18px 14px;
+            width: 220px; background: #f2efee; border-right: 1px solid var(--borde); padding: 18px 14px;
         }
-        .brand {
-            font-weight: 700;
-            margin-bottom: 24px;
-        }
+        .brand { font-weight: 700; margin-bottom: 24px; }
         .nav-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            margin-bottom: 8px;
-            border-radius: 8px;
-            color: #333;
-            text-decoration: none;
+            display: flex; align-items: center; gap: 10px; padding: 10px 12px; margin-bottom: 8px; border-radius: 8px; color: #333; text-decoration: none;
         }
         .nav-item.active {
-            background: rgba(247, 94, 84, 0.08);
-            color: var(--principal);
-            border: 1px solid rgba(247, 94, 84, 0.15);
-            font-weight: 700;
+            background: rgba(247, 94, 84, 0.08); color: var(--principal); border: 1px solid rgba(247, 94, 84, 0.15); font-weight: 700;
         }
-        .content {
-            flex: 1;
-            padding: 30px 32px;
+        .content { flex: 1; padding: 30px 32px; }
+        .topbar { display: flex; justify-content: space-between; align-items: end; gap: 16px; margin-bottom: 24px; }
+        h1 { margin: 0; }
+        .sub { margin: 8px 0 0; color: var(--muted); }
+        .badge {
+            display: inline-block; padding: 8px 12px; border-radius: 999px; background: #fff3f1; color: var(--principal);
+            font-size: 12px; font-weight: 700; border: 1px solid #ffd8d2;
+        }
+        .panels {
+            display: grid; grid-template-columns: 1.2fr 1fr; gap: 24px;
         }
         .card {
-            background: var(--panel);
-            border: 1px solid var(--borde);
-            border-radius: 14px;
-            padding: 24px;
-            box-shadow: 0 6px 18px rgba(0,0,0,0.03);
+            background: var(--panel); border: 1px solid var(--borde); border-radius: 14px; padding: 22px; box-shadow: 0 6px 18px rgba(0,0,0,0.03);
         }
-        h1 { margin-top: 0; }
-        p { color: var(--muted); }
+        table {
+            width: 100%; border-collapse: collapse; margin-top: 18px;
+        }
+        th, td { padding: 12px 10px; border-bottom: 1px solid var(--borde); text-align: left; }
+        th { color: var(--muted); font-size: 12px; text-transform: uppercase; }
+        .status {
+            display: inline-block; padding: 6px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid transparent;
+        }
+        .status.pagada { background: #e7f7ef; color: var(--verde); border-color: rgba(76, 175, 120, 0.2); }
+        .status.pendiente { background: #fff2df; color: var(--naranja); border-color: rgba(242, 165, 82, 0.2); }
+        .status.cancelada { background: #fde9e9; color: var(--rojo); border-color: rgba(217, 94, 94, 0.2); }
+        .btn-pay {
+            background: var(--principal); color: #fff; border: none; border-radius: 8px; padding: 8px 12px; font-weight: 700; cursor: pointer;
+        }
+        .order-list { display: grid; gap: 14px; }
+        .order-item {
+            border: 1px solid var(--borde); background: #fffaf9; border-radius: 12px; padding: 14px;
+        }
+        .meta { color: var(--muted); font-size: 12px; }
+        .money { font-size: 18px; font-weight: 700; }
+        @media (max-width: 900px) { .layout { flex-direction: column; } .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); } .content { padding: 20px 18px; } .panels { grid-template-columns: 1fr; } }
     </style>
 </head>
 <body>
@@ -77,10 +81,67 @@
                 <a class="nav-item" href="{% url 'inicio' %}">↩ Volver a inicio</a>
             </nav>
         </aside>
+
         <main class="content">
-            <div class="card">
-                <h1>Cajero</h1>
-                <p>Panel funcional para facturación y cierre de ventas.</p>
+            <div class="topbar">
+                <div>
+                    <h1>Cajero</h1>
+                    <p class="sub">Verifica pagos y confirma la facturación de las comandas.</p>
+                </div>
+                <span class="badge">Caja</span>
+            </div>
+
+            <div class="panels">
+                <section class="card">
+                    <h2>Facturas pendientes</h2>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Factura</th>
+                                <th>Cliente</th>
+                                <th>Total</th>
+                                <th>Estado</th>
+                                <th>Acción</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for factura in facturas %}
+                            <tr>
+                                <td>{{ factura.numero }}</td>
+                                <td>{{ factura.cliente|default:'Cliente general' }}</td>
+                                <td>${{ factura.total }}</td>
+                                <td><span class="status {{ factura.estado }}">{{ factura.get_estado_display }}</span></td>
+                                <td>
+                                    <form method="post">
+                                        {% csrf_token %}
+                                        <input type="hidden" name="accion" value="pagar">
+                                        <input type="hidden" name="factura_id" value="{{ factura.id }}">
+                                        <button class="btn-pay" type="submit">Marcar pagada</button>
+                                    </form>
+                                </td>
+                            </tr>
+                            {% empty %}
+                            <tr><td colspan="5">No hay facturas por pagar.</td></tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </section>
+
+                <section class="card">
+                    <h2>Comandas activas</h2>
+                    <div class="order-list">
+                        {% for comanda in comandas %}
+                        <div class="order-item">
+                            <div class="meta">Comanda #{{ comanda.id }} · {{ comanda.fecha_hora|date:'d/m/Y H:i' }}</div>
+                            <div class="money">Total: ${{ comanda.total }}</div>
+                            <div class="meta">Estado: {{ comanda.get_estado_display }}</div>
+                            <div class="meta">Detalle: {% for detalle in comanda.detalles.all %}{{ detalle.plato.nombre_plato }} x{{ detalle.cantidad }}{% if not forloop.last %}, {% endif %}{% empty %}Sin detalles{% endfor %}</div>
+                        </div>
+                        {% empty %}
+                        <p>No hay comandas registradas.</p>
+                        {% endfor %}
+                    </div>
+                </section>
             </div>
         </main>
     </div>

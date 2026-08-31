@@ -201,8 +201,8 @@
                     <tr>
                         <td>{{ detalle.descripcion }}</td>
                         <td>{{ detalle.cantidad }}</td>
-                        <td>${{ detalle.precio_unitario }}</td>
-                        <td>${{ detalle.subtotal }}</td>
+                        <td>$ {{ detalle.precio_unitario }}</td>
+                        <td>$ {{ detalle.subtotal }}</td>
                     </tr>
                     {% empty %}
                     <tr>
@@ -215,15 +215,15 @@
             <div class="totals">
                 <div class="totals-row">
                     <span>Subtotal</span>
-                    <span>${{ factura.subtotal }}</span>
+                    <span>$ {{ factura.subtotal_display }}</span>
                 </div>
                 <div class="totals-row">
                     <span>Impuesto</span>
-                    <span>${{ factura.impuesto }}</span>
+                    <span>$ {{ factura.impuesto_display }}</span>
                 </div>
                 <div class="totals-row total">
                     <span>Total</span>
-                    <span>${{ factura.total }}</span>
+                    <span>$ {{ factura.total_display }}</span>
                 </div>
             </div>
 

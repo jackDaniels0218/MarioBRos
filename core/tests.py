@@ -91,6 +91,69 @@ class InventarioViewTests(TestCase):
         self.assertRedirects(response, reverse('vista_admin'))
         self.assertContains(response, 'Inventario de platos')
 
+    def test_iniciar_sesion_rol_no_falla_si_existen_usuarios_duplicados(self):
+        Usuario.objects.create(
+            nombre='cajero',
+            rol=Usuario.Rol.CAJERO,
+            password_hash=make_password('cajero123'),
+            estado=True,
+        )
+        Usuario.objects.create(
+            nombre='cajero',
+            rol=Usuario.Rol.CAJERO,
+            password_hash=make_password('cajero123'),
+            estado=True,
+        )
+
+        response = self.client.get(reverse('iniciar_sesion_rol', args=['cajero']))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Usuario.objects.filter(nombre='cajero').count(), 1)
+
+
+class RolLoginTests(TestCase):
+    def setUp(self):
+        self.admin = Usuario.objects.create(
+            nombre='admin',
+            rol=Usuario.Rol.ADMIN,
+            password_hash=make_password('admin123'),
+            estado=True,
+        )
+        self.mesero = Usuario.objects.create(
+            nombre='mesero',
+            rol=Usuario.Rol.EMPLEADO,
+            password_hash=make_password('mesero123'),
+            estado=True,
+        )
+        self.cajero = Usuario.objects.create(
+            nombre='cajero',
+            rol=Usuario.Rol.CAJERO,
+            password_hash=make_password('cajero123'),
+            estado=True,
+        )
+
+    def test_login_mesero_usa_credenciales_de_mesero(self):
+        response = self.client.post(
+            reverse('iniciar_sesion_rol', args=['mesero']),
+            {'usuario': 'mesero', 'password': 'mesero123'},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRedirects(response, reverse('vista_mesero'))
+        self.assertContains(response, 'Comandas')
+
+    def test_login_cajero_usa_credenciales_de_cajero(self):
+        response = self.client.post(
+            reverse('iniciar_sesion_rol', args=['cajero']),
+            {'usuario': 'cajero', 'password': 'cajero123'},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRedirects(response, reverse('vista_cajero'))
+        self.assertContains(response, 'Cajero')
+
 
 class FacturacionViewTests(TestCase):
     def setUp(self):

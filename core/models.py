@@ -8,11 +8,10 @@ from django.utils import timezone
 # Actividad #4 - CRUD Usuarios
 # ---------------------------------------------------------------------------
 class Usuario(models.Model):
-    # Actividad #1: el login debe permitir solo dos roles -> Administrador y
-    # Empleado/Mesero. Antes "rol" era texto libre; ahora queda restringido.
     class Rol(models.TextChoices):
         ADMIN = 'admin', 'Administrador'
         EMPLEADO = 'empleado', 'Empleado/Mesero'
+        CAJERO = 'cajero', 'Cajero'
 
     nombre = models.CharField(max_length=100)
     rol = models.CharField(max_length=20, choices=Rol.choices, default=Rol.EMPLEADO)
