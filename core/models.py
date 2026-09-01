@@ -52,6 +52,22 @@ class RegistroSesion(models.Model):
         return f"{self.usuario} - {self.tipo_evento} - {self.fecha_hora}"
 
 
+class RegistroActividad(models.Model):
+    usuario = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='actividades')
+    accion = models.CharField(max_length=120)
+    detalle = models.TextField(blank=True)
+    fecha_hora = models.DateTimeField(auto_now_add=True)
+    ip_address = models.GenericIPAddressField()
+
+    class Meta:
+        ordering = ['-fecha_hora']
+        verbose_name = 'Registro de actividad'
+        verbose_name_plural = 'Registros de actividad'
+
+    def __str__(self):
+        return f'{self.usuario} - {self.accion}'
+
+
 # ---------------------------------------------------------------------------
 # Actividad #5 / #10 / #11 / #14 - CRUD Insumos Lotes
 # ---------------------------------------------------------------------------
@@ -71,7 +87,7 @@ class LoteInsumo(models.Model):
     codigo_referencia = models.CharField(max_length=20, unique=True)
     nombre_insumo = models.CharField(max_length=100)
     categoria = models.CharField(max_length=20, choices=Categoria.choices)
-    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2)
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=2)
     cantidad_disponible = models.DecimalField(max_digits=10, decimal_places=2)
     # Actividad #14: alerta de stock crítico -> hace falta un umbral por lote.
     stock_minimo = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -83,6 +99,13 @@ class LoteInsumo(models.Model):
         verbose_name_plural = "Lotes de insumos"
         ordering = ['fecha_ingreso']  # soporta el descuento PEPS/FIFO (Actividad #12)
 
+    def save(self, *args, **kwargs):
+        if not self.codigo_referencia:
+            prefix = self.fecha_ingreso.strftime('%Y%m%d')
+            sequence = LoteInsumo.objects.filter(codigo_referencia__startswith=f'REF-{prefix}-').count() + 1
+            self.codigo_referencia = f'REF-{prefix}-{sequence:03d}'
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.codigo_referencia
 
@@ -91,14 +114,21 @@ class LoteInsumo(models.Model):
 # Actividad #6 - CRUD Platos
 # ---------------------------------------------------------------------------
 class Plato(models.Model):
+    codigo = models.CharField(max_length=20, blank=True, default='')
     nombre_plato = models.CharField(max_length=100)
-    precio_venta = models.DecimalField(max_digits=10, decimal_places=2)
+    precio_venta = models.DecimalField(max_digits=12, decimal_places=2)
     categoria = models.CharField(max_length=100)
     estado = models.BooleanField(default=True)
 
     class Meta:
         verbose_name = "Plato"
         verbose_name_plural = "Platos"
+
+    def save(self, *args, **kwargs):
+        if not self.codigo:
+            base = (self.nombre_plato or 'PLATO').upper()
+            self.codigo = f"{base[:4]}-{uuid.uuid4().hex[:6].upper()}".replace(' ', '').strip('-')
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.nombre_plato
@@ -133,16 +163,28 @@ class Comanda(models.Model):
         PAGADA = 'pagada', 'Pagada'
 
     usuario = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='comandas')
+    mesa = models.PositiveIntegerField(default=1, db_index=True)
     fecha_hora = models.DateTimeField(auto_now_add=True)
     estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE)
     # Actividad #20: el total se calcula automáticamente en tiempo real,
     # por lo que necesita un valor por defecto en lugar de ser obligatorio.
-    total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     class Meta:
         verbose_name = "Comanda"
         verbose_name_plural = "Comandas"
         ordering = ['-fecha_hora']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['mesa'],
+                condition=models.Q(estado__in=['pendiente', 'enviada']),
+                name='unique_active_comanda_per_mesa',
+            )
+        ]
+
+    @property
+    def is_active(self):
+        return self.estado in [self.Estado.PENDIENTE, self.Estado.ENVIADA]
 
     def __str__(self):
         return f"Comanda {self.id}"
@@ -158,10 +200,10 @@ class DetalleComanda(models.Model):
     # Actividad #20/#21: se guarda el precio del plato al momento de la venta
     # para que reportes y totales históricos no cambien si el precio del
     # plato se actualiza después.
-    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     comentario = models.TextField(blank=True)
     lote_descontado = models.ForeignKey(
-        LoteInsumo, on_delete=models.PROTECT, related_name='detalles_descontados'
+        LoteInsumo, on_delete=models.PROTECT, related_name='detalles_descontados', null=True, blank=True
     )
 
     class Meta:
@@ -174,6 +216,21 @@ class DetalleComanda(models.Model):
     @property
     def subtotal(self):
         return self.cantidad * self.precio_unitario
+
+
+class ConsumoInsumo(models.Model):
+    detalle_comanda = models.ForeignKey(DetalleComanda, on_delete=models.CASCADE, related_name='consumos')
+    lote = models.ForeignKey(LoteInsumo, on_delete=models.PROTECT, related_name='consumos')
+    cantidad = models.DecimalField(max_digits=12, decimal_places=2)
+    costo_unitario = models.DecimalField(max_digits=12, decimal_places=2)
+    fecha_hora = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['fecha_hora', 'id']
+
+    @property
+    def costo_total(self):
+        return self.cantidad * self.costo_unitario
 
 
 # ---------------------------------------------------------------------------
@@ -219,9 +276,9 @@ class Factura(models.Model):
     usuario = models.ForeignKey(Usuario, on_delete=models.PROTECT, related_name='facturas')
     cliente = models.CharField(max_length=150, blank=True)
     fecha_hora = models.DateTimeField(auto_now_add=True)
-    subtotal = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    impuesto = models.DecimalField(max_digits=10, decimal_places=2, default=0)
-    total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    impuesto = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     metodo_pago = models.CharField(max_length=20, choices=MetodoPago.choices, default=MetodoPago.EFECTIVO)
     estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PAGADA)
     observacion = models.TextField(blank=True)
@@ -250,7 +307,7 @@ class DetalleFactura(models.Model):
     factura = models.ForeignKey(Factura, on_delete=models.CASCADE, related_name='detalles')
     descripcion = models.CharField(max_length=200)
     cantidad = models.PositiveIntegerField(default=1)
-    precio_unitario = models.DecimalField(max_digits=10, decimal_places=2, default=0)
+    precio_unitario = models.DecimalField(max_digits=12, decimal_places=2, default=0)
 
     class Meta:
         verbose_name = "Detalle de factura"
