@@ -4,7 +4,7 @@ from django.contrib.auth.hashers import make_password
 from django.test import TestCase
 from django.urls import reverse
 
-from core.models import Factura, LoteInsumo, Plato, RecetaPlato, Usuario
+from core.models import Comanda, DetalleComanda, Factura, LoteInsumo, Plato, RecetaPlato, Usuario
 
 
 class InventarioViewTests(TestCase):
@@ -155,6 +155,110 @@ class RolLoginTests(TestCase):
         self.assertContains(response, 'Cajero')
 
 
+class ComandaMesaFlowTests(TestCase):
+    def setUp(self):
+        self.mesero = Usuario.objects.create(
+            nombre='mesero',
+            rol=Usuario.Rol.EMPLEADO,
+            password_hash=make_password('mesero123'),
+            estado=True,
+        )
+        self.session = self.client.session
+        self.session['rol'] = Usuario.Rol.EMPLEADO
+        self.session['usuario_id'] = self.mesero.id
+        self.session.save()
+
+        self.plato = Plato.objects.create(
+            nombre_plato='Hamburguesa Especial',
+            categoria='Hamburguesas',
+            precio_venta=Decimal('180.00'),
+            codigo='1025',
+            estado=True,
+        )
+        self.gaseosa = Plato.objects.create(
+            nombre_plato='Gaseosa',
+            categoria='Bebidas',
+            precio_venta=Decimal('50.00'),
+            codigo='2001',
+            estado=True,
+        )
+
+    def test_crea_y_reutiliza_comanda_activa_por_mesa(self):
+        response = self.client.post(
+            reverse('vista_mesero'),
+            {'accion': 'agregar', 'mesa': '5', 'plato_id': self.plato.id, 'cantidad': '2'},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Comanda.objects.filter(mesa=5).count(), 1)
+
+        self.client.post(
+            reverse('vista_mesero'),
+            {'accion': 'agregar', 'mesa': '5', 'plato_id': self.gaseosa.id, 'cantidad': '1'},
+        )
+
+        comanda = Comanda.objects.get(mesa=5)
+        self.assertEqual(comanda.detalles.count(), 2)
+        self.assertEqual(comanda.total, Decimal('410.00'))
+
+    def test_no_crea_dos_comandas_activas_para_la_misma_mesa(self):
+        comanda_1 = Comanda.objects.create(
+            usuario=self.mesero,
+            mesa=7,
+            estado=Comanda.Estado.PENDIENTE,
+            total=Decimal('100.00'),
+        )
+        DetalleComanda.objects.create(
+            comanda=comanda_1,
+            plato=self.plato,
+            cantidad=1,
+            precio_unitario=self.plato.precio_venta,
+            comentario='Mesa 7',
+            lote_descontado=self.plato.receta.first().insumo if self.plato.receta.exists() else None,
+        )
+
+        self.client.post(
+            reverse('vista_mesero'),
+            {'accion': 'agregar', 'mesa': '7', 'plato_id': self.gaseosa.id, 'cantidad': '1'},
+        )
+
+        self.assertEqual(Comanda.objects.filter(mesa=7, estado__in=[Comanda.Estado.PENDIENTE, Comanda.Estado.ENVIADA]).count(), 1)
+
+    def test_busca_plato_por_codigo_y_calcula_total(self):
+        response = self.client.get(reverse('vista_mesero'), {'mesa': '3', 'codigo': '2001'})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Gaseosa')
+        self.assertContains(response, '2001')
+
+    def test_eliminar_ultimo_plato_libera_la_mesa(self):
+        self.client.post(
+            reverse('vista_mesero'),
+            {'accion': 'agregar', 'mesa': '6', 'plato_id': self.plato.id, 'cantidad': '1'},
+        )
+        comanda = Comanda.objects.get(mesa=6)
+        detalle = comanda.detalles.get()
+
+        response = self.client.post(
+            reverse('vista_mesero'),
+            {'accion': 'eliminar', 'mesa': '6', 'detalle_id': detalle.id},
+            follow=True,
+        )
+
+        comanda.refresh_from_db()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(comanda.estado, Comanda.Estado.CANCELADA)
+        self.assertEqual(comanda.total, Decimal('0.00'))
+        self.assertFalse(comanda.detalles.exists())
+        self.assertFalse(
+            Comanda.objects.filter(
+                mesa=6,
+                estado__in=[Comanda.Estado.PENDIENTE, Comanda.Estado.ENVIADA],
+            ).exists()
+        )
+
+
 class FacturacionViewTests(TestCase):
     def setUp(self):
         self.admin = Usuario.objects.create(
@@ -207,6 +311,41 @@ class FacturacionViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Cajero')
+
+    def test_pagar_factura_libera_la_mesa_en_comandas(self):
+        self.session['rol'] = Usuario.Rol.CAJERO
+        self.session.save()
+        comanda = Comanda.objects.create(
+            usuario=self.admin,
+            mesa=8,
+            estado=Comanda.Estado.ENVIADA,
+            total=Decimal('100.00'),
+        )
+        factura = Factura.objects.create(
+            usuario=self.admin,
+            cliente='Mesa 8',
+            subtotal=Decimal('100.00'),
+            total=Decimal('100.00'),
+            estado=Factura.Estado.PENDIENTE,
+            observacion=f'Comanda #{comanda.id}',
+        )
+
+        response = self.client.post(
+            reverse('vista_cajero'),
+            {'accion': 'pagar', 'factura_id': factura.id},
+        )
+
+        comanda.refresh_from_db()
+        factura.refresh_from_db()
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(factura.estado, Factura.Estado.PAGADA)
+        self.assertEqual(comanda.estado, Comanda.Estado.PAGADA)
+        self.assertFalse(
+            Comanda.objects.filter(
+                mesa=8,
+                estado__in=[Comanda.Estado.PENDIENTE, Comanda.Estado.ENVIADA],
+            ).exists()
+        )
 
     def test_admin_puede_acceder_a_vista_mesero(self):
         self.session['rol'] = Usuario.Rol.ADMIN

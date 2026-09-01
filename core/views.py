@@ -1,19 +1,34 @@
+from datetime import timedelta
 from decimal import Decimal, InvalidOperation
+import re
 
 from django.contrib.auth.hashers import check_password, make_password
-from django.db import connection
+from django.db import connection, transaction
+from django.db.models import Count, Sum
+from django.db.models import Q
+from django.http import HttpResponse
 from django.shortcuts import redirect, render
+from django.utils import timezone
+
+from .forms import LoteAdminForm, MermaAdminForm, PlatoAdminForm, RecetaAdminForm, UsuarioAdminForm
 
 from .models import (
     Comanda,
+    ConsumoInsumo,
+    AjusteMerma,
     DetalleComanda,
     DetalleFactura,
     Factura,
     LoteInsumo,
     Plato,
     RegistroSesion,
+    RegistroActividad,
+    RecetaPlato,
     Usuario,
 )
+from openpyxl import Workbook
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 
 def format_money(value):
@@ -33,37 +48,6 @@ def _safe_decimal(value, default='0'):
         return Decimal(str(value))
     except (InvalidOperation, TypeError, ValueError):
         return Decimal(default)
-
-
-def _repair_corrupted_decimal_rows():
-    with connection.cursor() as cursor:
-        cursor.execute('SELECT id, total FROM core_comanda')
-        for comanda_id, total in cursor.fetchall():
-            try:
-                value = Decimal(str(total))
-                if not value.is_finite():
-                    raise InvalidOperation
-            except (InvalidOperation, TypeError, ValueError):
-                cursor.execute(f'UPDATE core_comanda SET total = 0 WHERE id = {int(comanda_id)}')
-                continue
-
-            if total != value:
-                cursor.execute(f'UPDATE core_comanda SET total = {value} WHERE id = {int(comanda_id)}')
-
-        cursor.execute('SELECT id, precio_unitario FROM core_detallecomanda')
-        for detalle_id, precio in cursor.fetchall():
-            try:
-                value = Decimal(str(precio))
-                if not value.is_finite():
-                    raise InvalidOperation
-            except (InvalidOperation, TypeError, ValueError):
-                cursor.execute(f'UPDATE core_detallecomanda SET precio_unitario = 0 WHERE id = {int(detalle_id)}')
-                continue
-
-            if precio != value:
-                cursor.execute(
-                    f'UPDATE core_detallecomanda SET precio_unitario = {value} WHERE id = {int(detalle_id)}'
-                )
 
 
 class _SafeDetalleCollection:
@@ -88,9 +72,7 @@ class _SafeComandaView:
 
 
 def _safe_comandas(limit=None):
-    _repair_corrupted_decimal_rows()
-
-    sql = 'SELECT id, usuario_id, fecha_hora, estado, total FROM core_comanda ORDER BY fecha_hora DESC'
+    sql = 'SELECT id, usuario_id, fecha_hora, estado, CAST(total AS TEXT) FROM core_comanda ORDER BY fecha_hora DESC'
     if limit is not None:
         sql += f' LIMIT {int(limit)}'
 
@@ -134,7 +116,7 @@ def _safe_comandas(limit=None):
 
 
 def _safe_facturas(limit=None):
-    sql = 'SELECT id, usuario_id, cliente, fecha_hora, subtotal, impuesto, total, metodo_pago, estado, observacion FROM core_factura ORDER BY fecha_hora DESC'
+    sql = 'SELECT id, usuario_id, cliente, fecha_hora, CAST(subtotal AS TEXT), CAST(impuesto AS TEXT), CAST(total AS TEXT), metodo_pago, estado, observacion FROM core_factura ORDER BY fecha_hora DESC'
     if limit is not None:
         sql += f' LIMIT {int(limit)}'
 
@@ -251,6 +233,49 @@ def _get_role_title(rol):
     return mapping.get(rol, 'Usuario')
 
 
+def _mesa_value(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _active_comanda_for_mesa(mesa):
+    mesa_num = _mesa_value(mesa)
+    if mesa_num is None:
+        return None
+    return (
+        Comanda.objects.filter(
+            mesa=mesa_num,
+            estado__in=[Comanda.Estado.PENDIENTE, Comanda.Estado.ENVIADA],
+        )
+        .select_related('usuario')
+        .order_by('-fecha_hora')
+        .first()
+    )
+
+
+def _get_or_create_comanda_for_mesa(usuario, mesa):
+    mesa_num = _mesa_value(mesa)
+    if mesa_num is None:
+        return None, 'Mesa inválida.'
+
+    with transaction.atomic():
+        comanda = _active_comanda_for_mesa(mesa_num)
+        if comanda is not None:
+            return comanda, None
+
+        comanda = Comanda.objects.create(
+            usuario=usuario or Usuario.objects.order_by('id').first(),
+            mesa=mesa_num,
+            estado=Comanda.Estado.PENDIENTE,
+            total=Decimal('0'),
+        )
+        return comanda, None
+
+
 def _resolve_role(rol):
     if rol == 'mesero':
         return Usuario.Rol.EMPLEADO
@@ -295,7 +320,7 @@ def iniciar_sesion(request, rol='admin'):
     return render(request, 'IniciarSesion.html', {'error': error, 'rol': rol, 'titulo_rol': _get_role_title(rol)})
 
 
-def vista_admin(request):
+def _vista_inventario_legacy(request):
     if request.session.get('rol') != Usuario.Rol.ADMIN:
         return redirect('iniciar_sesion')
 
@@ -348,6 +373,173 @@ def vista_admin(request):
     return render(request, 'Inventario.html', context)
 
 
+def _admin_activity(request, usuario, accion, detalle=''):
+    RegistroActividad.objects.create(
+        usuario=usuario,
+        accion=accion,
+        detalle=detalle,
+        ip_address=request.META.get('REMOTE_ADDR') or '0.0.0.0',
+    )
+
+
+def _reporte_admin(fecha):
+    comandas = Comanda.objects.filter(fecha_hora__date=fecha)
+    pagadas = comandas.filter(estado=Comanda.Estado.PAGADA)
+    ventas = Factura.objects.filter(fecha_hora__date=fecha, estado=Factura.Estado.PAGADA).aggregate(total=Sum('total'))['total'] or Decimal('0')
+    detalles = DetalleComanda.objects.filter(comanda__in=pagadas)
+    costo = sum((consumo.cantidad * consumo.costo_unitario for consumo in ConsumoInsumo.objects.filter(detalle_comanda__in=detalles)), Decimal('0'))
+    mermas = AjusteMerma.objects.filter(fecha_hora__date=fecha).aggregate(total=Sum('cantidad'))['total'] or Decimal('0')
+    return {'fecha': fecha, 'ventas': ventas, 'pagadas': pagadas.count(), 'canceladas': comandas.filter(estado=Comanda.Estado.CANCELADA).count(), 'platos': detalles.aggregate(total=Sum('cantidad'))['total'] or 0, 'costo': costo, 'ganancia': ventas - costo, 'mermas': mermas}
+
+
+def _descontar_fifo(comanda):
+    consumos = []
+    for detalle in comanda.detalles.select_related('plato').all():
+        for receta in detalle.plato.receta.select_related('insumo').all():
+            requerido = receta.cantidad_requerida * detalle.cantidad
+            lotes = LoteInsumo.objects.filter(
+                nombre_insumo=receta.insumo.nombre_insumo,
+                cantidad_disponible__gt=0,
+            ).order_by('fecha_ingreso', 'id')
+            restante = requerido
+            for lote in lotes:
+                usado = min(restante, lote.cantidad_disponible)
+                if usado <= 0:
+                    continue
+                lote.cantidad_disponible -= usado
+                lote.save(update_fields=['cantidad_disponible'])
+                consumos.append(ConsumoInsumo(detalle_comanda=detalle, lote=lote, cantidad=usado, costo_unitario=lote.precio_unitario))
+                restante -= usado
+                if restante <= 0:
+                    break
+            if restante > 0:
+                raise ValueError(f'Stock insuficiente para {receta.insumo.nombre_insumo}.')
+    ConsumoInsumo.objects.bulk_create(consumos)
+
+
+def reporte_admin_exportar(request, formato):
+    if request.session.get('rol') != Usuario.Rol.ADMIN:
+        return redirect('iniciar_sesion')
+    fecha = request.GET.get('fecha') or str(timezone.localdate())
+    reporte = _reporte_admin(fecha)
+    if formato == 'excel':
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = 'Cierre del día'
+        sheet.append(['Indicador', 'Valor'])
+        for key, value in reporte.items():
+            sheet.append([key, str(value)])
+        response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+        response['Content-Disposition'] = f'attachment; filename="reporte-{fecha}.xlsx"'
+        workbook.save(response)
+        return response
+    response = HttpResponse(content_type='application/pdf')
+    response['Content-Disposition'] = f'attachment; filename="reporte-{fecha}.pdf"'
+    pdf = canvas.Canvas(response, pagesize=letter)
+    pdf.setFont('Helvetica-Bold', 16)
+    pdf.drawString(60, 750, f'Reporte administrativo - {fecha}')
+    pdf.setFont('Helvetica', 11)
+    y = 720
+    for key, value in reporte.items():
+        pdf.drawString(70, y, f'{key}: {value}')
+        y -= 22
+    pdf.save()
+    return response
+
+
+def vista_admin(request):
+    if request.session.get('rol') != Usuario.Rol.ADMIN:
+        return redirect('iniciar_sesion')
+
+    usuario = Usuario.objects.filter(id=request.session.get('usuario_id'), rol=Usuario.Rol.ADMIN, estado=True).first()
+    seccion = request.GET.get('seccion', 'dashboard')
+    if seccion == 'inventario' and request.method == 'POST' and request.POST.get('accion') == 'stock':
+        lote = LoteInsumo.objects.get(pk=request.POST['lote_id'])
+        cantidad = Decimal(request.POST.get('cantidad', '0'))
+        if cantidad > 0:
+            lote.cantidad_disponible += cantidad
+            lote.save(update_fields=['cantidad_disponible'])
+            _admin_activity(request, usuario, 'Actualizar stock', f'Lote {lote.id}: +{cantidad}')
+        return redirect('vista_admin')
+
+    if request.method == 'POST' and request.POST.get('accion') == 'toggle_usuario':
+        item = Usuario.objects.get(pk=request.POST['usuario_id'])
+        if item.pk != usuario.pk:
+            item.estado = not item.estado
+            item.save(update_fields=['estado'])
+            _admin_activity(request, usuario, 'Cambiar estado de usuario', item.nombre)
+        return redirect('/admin/inicio/?seccion=usuarios')
+
+    form_targets = {
+        'guardar_usuario': (UsuarioAdminForm, 'usuarios'),
+        'guardar_lote': (LoteAdminForm, 'lotes'),
+        'guardar_plato': (PlatoAdminForm, 'platos'),
+        'guardar_receta': (RecetaAdminForm, 'recetas'),
+        'guardar_merma': (MermaAdminForm, 'mermas'),
+    }
+    if request.method == 'POST' and request.POST.get('accion') in form_targets:
+        form_class, target = form_targets[request.POST['accion']]
+        form = form_class(request.POST)
+        if form.is_valid():
+            obj = form.save(commit=False)
+            if request.POST['accion'] == 'guardar_merma':
+                if obj.cantidad <= 0 or obj.cantidad > obj.lote.cantidad_disponible:
+                    return render(request, 'AdminPanel.html', {'seccion': 'mermas', 'form_merma': form, 'error': 'La cantidad de merma supera el stock disponible.'})
+                obj.usuario = usuario
+                obj.lote.cantidad_disponible -= obj.cantidad
+                obj.lote.save(update_fields=['cantidad_disponible'])
+            obj.save()
+            _admin_activity(request, usuario, request.POST['accion'], str(obj))
+            return redirect(f'/admin/inicio/?seccion={target}')
+
+    hoy = timezone.localdate()
+    comandas_hoy = Comanda.objects.filter(fecha_hora__date=hoy)
+    ventas = Factura.objects.filter(fecha_hora__date=hoy, estado=Factura.Estado.PAGADA)
+    context = {
+        'seccion': seccion,
+        'ventas_dia': ventas.aggregate(total=Sum('total'))['total'] or Decimal('0'),
+        'comandas_dia': comandas_hoy.count(),
+        'pendientes': comandas_hoy.filter(estado=Comanda.Estado.PENDIENTE).count(),
+        'enviadas': comandas_hoy.filter(estado=Comanda.Estado.ENVIADA).count(),
+        'pagadas': comandas_hoy.filter(estado=Comanda.Estado.PAGADA).count(),
+        'canceladas': comandas_hoy.filter(estado=Comanda.Estado.CANCELADA).count(),
+        'valor_inventario': sum((lote.cantidad_disponible * lote.precio_unitario for lote in LoteInsumo.objects.all()), Decimal('0')),
+        'stock_critico': LoteInsumo.objects.filter(cantidad_disponible__lte=5).order_by('cantidad_disponible')[:10],
+        'por_vencer': LoteInsumo.objects.filter(fecha_vencimiento__gte=hoy, fecha_vencimiento__lte=hoy + timedelta(days=30)).order_by('fecha_vencimiento')[:10],
+        'usuarios': Usuario.objects.order_by('nombre'),
+        'lotes': LoteInsumo.objects.order_by('-fecha_ingreso'),
+        'platos': Plato.objects.order_by('categoria', 'nombre_plato'),
+        'recetas': RecetaPlato.objects.select_related('plato', 'insumo'),
+        'mermas': AjusteMerma.objects.select_related('lote', 'usuario')[:50],
+        'sesiones': RegistroSesion.objects.select_related('usuario')[:100],
+        'actividades': RegistroActividad.objects.select_related('usuario')[:100],
+        'mesas': [{'numero': n, 'comanda': _active_comanda_for_mesa(n)} for n in range(1, 11)],
+        'comandas': Comanda.objects.select_related('usuario').prefetch_related('detalles__plato')[:100],
+        'form_usuario': UsuarioAdminForm(),
+        'form_lote': LoteAdminForm(),
+        'form_plato': PlatoAdminForm(),
+        'form_receta': RecetaAdminForm(),
+        'form_merma': MermaAdminForm(),
+    }
+    if seccion == 'reportes':
+        context['fecha_reporte'] = request.GET.get('fecha') or str(hoy)
+        context['reporte'] = _reporte_admin(context['fecha_reporte'])
+    context['mesas_ocupadas'] = sum(1 for mesa in context['mesas'] if mesa['comanda'])
+    context['inventario'] = []
+    for plato in Plato.objects.filter(estado=True).prefetch_related('receta__insumo').order_by('categoria', 'nombre_plato'):
+        porciones, insumo = _porciones_disponibles(plato)
+        estado, clase = _estado_inventario(porciones)
+        context['inventario'].append({'plato': plato, 'insumo_critico': insumo, 'porciones_disponibles': porciones, 'estado_titulo': estado, 'estado_clase': clase})
+    if seccion == 'inventario':
+        platos = Plato.objects.filter(estado=True).prefetch_related('receta__insumo').order_by('categoria', 'nombre_plato')
+        context['inventario'] = []
+        for plato in platos:
+            porciones, insumo = _porciones_disponibles(plato)
+            estado, clase = _estado_inventario(porciones)
+            context['inventario'].append({'plato': plato, 'insumo_critico': insumo, 'porciones_disponibles': porciones, 'estado_titulo': estado, 'estado_clase': clase})
+    return render(request, 'AdminPanel.html', context)
+
+
 def vista_menu(request):
     if request.session.get('rol') not in [Usuario.Rol.ADMIN, Usuario.Rol.CAJERO, Usuario.Rol.EMPLEADO]:
         return redirect('inicio')
@@ -370,84 +562,180 @@ def vista_menu(request):
 
 
 def vista_mesero(request):
-    _repair_corrupted_decimal_rows()
-
     if request.session.get('rol') not in [Usuario.Rol.ADMIN, Usuario.Rol.EMPLEADO]:
         return redirect('inicio')
+
+    selected_mesa = request.POST.get('mesa') or request.GET.get('mesa') or request.session.get('mesa_actual')
+    selected_mesa = _mesa_value(selected_mesa)
+    request.session['mesa_actual'] = selected_mesa if selected_mesa is not None else None
+
+    usuario_actual = Usuario.objects.filter(id=request.session.get('usuario_id')).first()
+    if not usuario_actual:
+        usuario_actual = Usuario.objects.filter(rol=Usuario.Rol.EMPLEADO).order_by('id').first()
+
+    error = None
+    info = None
 
     if request.method == 'POST':
         accion = request.POST.get('accion')
         mesa = request.POST.get('mesa') or request.session.get('mesa_actual')
         plato_id = request.POST.get('plato_id')
         comanda_id = request.POST.get('comanda_id')
-        cantidad = max(1, int(request.POST.get('cantidad', '1') or '1'))
+        detalle_id = request.POST.get('detalle_id')
+        codigo = (request.POST.get('codigo') or '').strip()
+        cantidad = request.POST.get('cantidad', '1')
 
-        if accion in ['seleccionar', 'seleccionar_mesa'] and mesa:
-            request.session['mesa_actual'] = mesa
+        try:
+            cantidad = max(1, int(cantidad or '1'))
+        except (TypeError, ValueError):
+            cantidad = 1
+
+        if accion in ['seleccionar', 'seleccionar_mesa', 'abrir_mesa'] and mesa:
+            request.session['mesa_actual'] = _mesa_value(mesa)
             return redirect('vista_mesero')
 
-        usuario_actual = Usuario.objects.filter(id=request.session.get('usuario_id')).first()
-        if not usuario_actual:
-            usuario_actual = Usuario.objects.filter(rol=Usuario.Rol.EMPLEADO).order_by('id').first()
+        if accion == 'cerrar_mesa':
+            request.session['mesa_actual'] = None
+            return redirect('vista_mesero')
 
         if accion in ['agregar', 'crear'] and plato_id and mesa:
-            plato = Plato.objects.get(pk=plato_id)
-            comanda = Comanda.objects.filter(pk=comanda_id).first() if comanda_id else None
-            if comanda is None:
-                comanda = Comanda.objects.create(
-                    usuario=usuario_actual or Usuario.objects.order_by('id').first(),
-                    estado=Comanda.Estado.PENDIENTE,
-                    total=0,
-                )
+            plato = Plato.objects.filter(pk=plato_id).first()
+            if not plato:
+                error = 'Producto no encontrado.'
+            else:
+                comanda, comanda_error = _get_or_create_comanda_for_mesa(usuario_actual, mesa)
+                if comanda_error:
+                    error = comanda_error
+                else:
+                    if comanda.mesa != _mesa_value(mesa):
+                        comanda.mesa = _mesa_value(mesa)
+                        comanda.save(update_fields=['mesa'])
 
-            detalle, created = DetalleComanda.objects.get_or_create(
-                comanda=comanda,
-                plato=plato,
-                defaults={
-                    'cantidad': cantidad,
-                    'precio_unitario': plato.precio_venta,
-                    'comentario': f'Mesa {mesa}',
-                    'lote_descontado': plato.receta.first().insumo if plato.receta.exists() else LoteInsumo.objects.order_by('id').first(),
-                },
-            )
-            if not created:
-                detalle.cantidad += cantidad
-                detalle.precio_unitario = plato.precio_venta
-                detalle.comentario = f'Mesa {mesa}'
-                detalle.lote_descontado = plato.receta.first().insumo if plato.receta.exists() else detalle.lote_descontado
-                detalle.save()
+                    detalle, created = DetalleComanda.objects.get_or_create(
+                        comanda=comanda,
+                        plato=plato,
+                        defaults={
+                            'cantidad': cantidad,
+                            'precio_unitario': plato.precio_venta,
+                            'comentario': f'Mesa {comanda.mesa}',
+                            'lote_descontado': plato.receta.first().insumo if plato.receta.exists() else None,
+                        },
+                    )
+                    if not created:
+                        detalle.cantidad += cantidad
+                        detalle.precio_unitario = plato.precio_venta
+                        detalle.comentario = f'Mesa {comanda.mesa}'
+                        detalle.lote_descontado = plato.receta.first().insumo if plato.receta.exists() else detalle.lote_descontado
+                        detalle.save()
 
-            comanda.total = sum((d.subtotal for d in comanda.detalles.all()), Decimal('0'))
-            comanda.save(update_fields=['total'])
-            return redirect('vista_mesero')
+                    comanda.total = sum((d.subtotal for d in comanda.detalles.all()), Decimal('0'))
+                    comanda.save(update_fields=['total'])
+                    request.session['mesa_actual'] = comanda.mesa
+                    info = 'Producto agregado correctamente.'
+                    return redirect('vista_mesero')
+
+        if accion in ['incrementar', 'disminuir', 'eliminar'] and detalle_id:
+            detalle = DetalleComanda.objects.filter(pk=detalle_id).select_related('comanda', 'plato').first()
+            if detalle is None:
+                error = 'No se encontró el detalle de la comanda.'
+            else:
+                if accion == 'incrementar':
+                    detalle.cantidad += 1
+                    detalle.save(update_fields=['cantidad'])
+                    info = 'Cantidad aumentada.'
+                elif accion == 'disminuir':
+                    if detalle.cantidad > 1:
+                        detalle.cantidad -= 1
+                        detalle.save(update_fields=['cantidad'])
+                        info = 'Cantidad reducida.'
+                    else:
+                        detalle.delete()
+                        info = 'Producto eliminado.'
+                elif accion == 'eliminar':
+                    detalle.delete()
+                    info = 'Producto eliminado.'
+
+                comanda = detalle.comanda
+                comanda.total = sum((d.subtotal for d in comanda.detalles.all()), Decimal('0'))
+                if not comanda.detalles.exists():
+                    comanda.estado = Comanda.Estado.CANCELADA
+                    comanda.save(update_fields=['total', 'estado'])
+                else:
+                    comanda.save(update_fields=['total'])
+                request.session['mesa_actual'] = detalle.comanda.mesa
+                return redirect('vista_mesero')
 
         if accion in ['enviar_facturacion', 'finalizar'] and comanda_id:
-            comanda = Comanda.objects.get(pk=comanda_id)
-            comanda.estado = Comanda.Estado.ENVIADA
-            comanda.save(update_fields=['estado'])
+            comanda = Comanda.objects.filter(pk=comanda_id).prefetch_related('detalles__plato__receta__insumo').first()
+            if comanda is None:
+                error = 'La comanda no existe.'
+            else:
+                if not ConsumoInsumo.objects.filter(detalle_comanda__comanda=comanda).exists():
+                    try:
+                        with transaction.atomic():
+                            _descontar_fifo(comanda)
+                            comanda.estado = Comanda.Estado.ENVIADA
+                            comanda.save(update_fields=['estado'])
+                    except ValueError as exc:
+                        error = str(exc)
+                        return redirect('vista_mesero')
+                else:
+                    comanda.estado = Comanda.Estado.ENVIADA
+                    comanda.save(update_fields=['estado'])
 
-            factura_existente = Factura.objects.filter(observacion__icontains=f'Comanda #{comanda.id}').first()
-            if not factura_existente:
-                usuario_factura = usuario_actual or Usuario.objects.filter(rol=Usuario.Rol.CAJERO).order_by('id').first() or Usuario.objects.order_by('id').first()
-                factura = Factura.objects.create(
-                    usuario=usuario_factura,
-                    cliente=f'Mesa {request.session.get("mesa_actual", "general")}',
-                    subtotal=comanda.total,
-                    impuesto=Decimal('0'),
-                    total=comanda.total,
-                    estado=Factura.Estado.PENDIENTE,
-                    observacion=f'Comanda #{comanda.id}',
-                )
-                for detalle in comanda.detalles.all():
-                    DetalleFactura.objects.create(
-                        factura=factura,
-                        descripcion=detalle.plato.nombre_plato,
-                        cantidad=detalle.cantidad,
-                        precio_unitario=detalle.precio_unitario,
+                factura_existente = Factura.objects.filter(observacion__icontains=f'Comanda #{comanda.id}').first()
+                if not factura_existente:
+                    usuario_factura = usuario_actual or Usuario.objects.filter(rol=Usuario.Rol.CAJERO).order_by('id').first() or Usuario.objects.order_by('id').first()
+                    factura = Factura.objects.create(
+                        usuario=usuario_factura,
+                        cliente=f'Mesa {comanda.mesa}',
+                        subtotal=comanda.total,
+                        impuesto=Decimal('0'),
+                        total=comanda.total,
+                        estado=Factura.Estado.PENDIENTE,
+                        observacion=f'Comanda #{comanda.id}',
                     )
-            return redirect('vista_mesero')
+                    for detalle in comanda.detalles.all():
+                        DetalleFactura.objects.create(
+                            factura=factura,
+                            descripcion=detalle.plato.nombre_plato,
+                            cantidad=detalle.cantidad,
+                            precio_unitario=detalle.precio_unitario,
+                        )
+                info = f'Comanda #{comanda.id} enviada a facturación.'
+                return redirect('vista_mesero')
+
+        if codigo:
+            plato_buscar = Plato.objects.filter(estado=True).filter(Q(codigo__icontains=codigo) | Q(nombre_plato__icontains=codigo)).first()
+            if plato_buscar is not None:
+                info = f'Producto encontrado: {plato_buscar.nombre_plato}'
 
     mesas = list(range(1, 11))
+    mesa_statuses = []
+    for mesa_num in mesas:
+        comanda = _active_comanda_for_mesa(mesa_num)
+        mesa_statuses.append({
+            'mesa': mesa_num,
+            'ocupada': comanda is not None,
+            'comanda': comanda,
+        })
+
+    mesa_comanda = _active_comanda_for_mesa(selected_mesa) if selected_mesa is not None else None
+    if mesa_comanda is not None:
+        mesa_detalles = list(mesa_comanda.detalles.select_related('plato').all())
+    else:
+        mesa_detalles = []
+
+    categoria_actual = request.GET.get('categoria') or request.POST.get('categoria') or 'Todos'
+    categorias = ['Todos'] + sorted({plato.categoria for plato in Plato.objects.filter(estado=True).only('categoria')})
+    platos = Plato.objects.filter(estado=True).order_by('categoria', 'nombre_plato')
+    if categoria_actual and categoria_actual != 'Todos':
+        platos = platos.filter(categoria__icontains=categoria_actual)
+
+    query_codigo = request.GET.get('codigo', '').strip() or request.POST.get('codigo', '').strip()
+    if query_codigo:
+        platos = platos.filter(Q(codigo__icontains=query_codigo) | Q(nombre_plato__icontains=query_codigo))
+
     command_log = _safe_comandas()
     for item in command_log:
         first_detalle = item.detalles.all()[0] if item.detalles.all() else None
@@ -455,9 +743,18 @@ def vista_mesero(request):
 
     return render(request, 'Comandas.html', {
         'mesas': mesas,
-        'mesa_actual': request.session.get('mesa_actual'),
+        'mesa_statuses': mesa_statuses,
+        'mesa_actual': selected_mesa,
+        'mesa_comanda': mesa_comanda,
+        'mesa_detalles': mesa_detalles,
+        'platos': platos,
+        'categorias': categorias,
+        'categoria_actual': categoria_actual,
+        'codigo_busqueda': query_codigo,
+        'error': error,
+        'info': info,
         'comandas': command_log,
-        'platos': Plato.objects.filter(estado=True).order_by('categoria', 'nombre_plato'),
+        'total_mesa': mesa_comanda.total if mesa_comanda else Decimal('0'),
     })
 
 
@@ -472,6 +769,13 @@ def vista_cajero(request):
             factura.estado = Factura.Estado.PAGADA
             factura.observacion = factura.observacion or 'Pagada por caja'
             factura.save(update_fields=['estado', 'observacion'])
+
+            referencia = re.search(r'\bComanda\s+#(\d+)\b', factura.observacion or '', re.IGNORECASE)
+            if referencia:
+                Comanda.objects.filter(
+                    pk=int(referencia.group(1)),
+                    estado=Comanda.Estado.ENVIADA,
+                ).update(estado=Comanda.Estado.PAGADA)
         return redirect('vista_cajero')
 
     facturas = _safe_facturas(15)
