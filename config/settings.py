@@ -126,3 +126,22 @@ MAILERS = {
         'BACKEND': 'django.core.mail.backends.console.EmailBackend',
     },
 }
+
+
+# Session Configuration
+# https://docs.djangoproject.com/en/6.1/topics/http/sessions/
+
+# Expiración de sesión por inactividad: 30 minutos (1800 segundos)
+SESSION_COOKIE_AGE = 1800
+
+# La sesión expira cuando cierra el navegador
+SESSION_EXPIRE_AT_BROWSER_CLOSE = True
+
+# Solo enviar cookies por HTTPS (deshabilitado en desarrollo local)
+SESSION_COOKIE_SECURE = False
+
+# Proteger contra acceso JavaScript (XSS)
+SESSION_COOKIE_HTTPONLY = True
+
+# SameSite para proteger contra CSRF
+SESSION_COOKIE_SAMESITE = 'Lax'

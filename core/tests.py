@@ -1,10 +1,11 @@
+from datetime import date
 from decimal import Decimal
 
 from django.contrib.auth.hashers import make_password
 from django.test import TestCase
 from django.urls import reverse
 
-from core.models import Comanda, DetalleComanda, Factura, LoteInsumo, Plato, RecetaPlato, Usuario
+from core.models import AjusteMerma, Comanda, ConsumoInsumo, DetalleComanda, Factura, LoteInsumo, Plato, RecetaPlato, RegistroSesion, Usuario
 
 
 class InventarioViewTests(TestCase):
@@ -17,6 +18,7 @@ class InventarioViewTests(TestCase):
         )
         self.session = self.client.session
         self.session['rol'] = Usuario.Rol.ADMIN
+        self.session['usuario_id'] = self.admin.id
         self.session.save()
 
         self.arroz = LoteInsumo.objects.create(
@@ -257,6 +259,248 @@ class ComandaMesaFlowTests(TestCase):
                 estado__in=[Comanda.Estado.PENDIENTE, Comanda.Estado.ENVIADA],
             ).exists()
         )
+
+
+class InventarioTransaccionalTests(TestCase):
+    def setUp(self):
+        self.mesero = Usuario.objects.create(
+            nombre='mesero',
+            rol=Usuario.Rol.EMPLEADO,
+            password_hash=make_password('mesero123'),
+            estado=True,
+        )
+        self.admin = Usuario.objects.create(
+            nombre='admin',
+            rol=Usuario.Rol.ADMIN,
+            password_hash=make_password('admin123'),
+            estado=True,
+        )
+        self.session = self.client.session
+        self.session['rol'] = Usuario.Rol.EMPLEADO
+        self.session['usuario_id'] = self.mesero.id
+        self.session.save()
+
+    def test_fifo_consumo_usa_dos_lotes_en_orden(self):
+        lote_a = LoteInsumo.objects.create(
+            codigo_referencia='REF-20260901-001',
+            nombre_insumo='Pollo',
+            categoria=LoteInsumo.Categoria.CARNES,
+            precio_unitario=Decimal('12.00'),
+            cantidad_disponible=Decimal('10.00'),
+            stock_minimo=Decimal('2.00'),
+            fecha_ingreso='2026-09-01',
+            fecha_vencimiento='2026-09-30',
+        )
+        lote_b = LoteInsumo.objects.create(
+            codigo_referencia='REF-20260902-001',
+            nombre_insumo='Pollo',
+            categoria=LoteInsumo.Categoria.CARNES,
+            precio_unitario=Decimal('14.00'),
+            cantidad_disponible=Decimal('20.00'),
+            stock_minimo=Decimal('2.00'),
+            fecha_ingreso='2026-09-02',
+            fecha_vencimiento='2026-10-02',
+        )
+
+        plato = Plato.objects.create(
+            nombre_plato='Pollo al horno',
+            categoria='Platos fuertes',
+            precio_venta=Decimal('150.00'),
+            codigo='PL-001',
+            estado=True,
+        )
+        RecetaPlato.objects.create(plato=plato, insumo=lote_a, cantidad_requerida=Decimal('1'))
+
+        comanda = Comanda.objects.create(usuario=self.mesero, mesa=8, estado=Comanda.Estado.PENDIENTE, total=Decimal('0'))
+        detalle = DetalleComanda.objects.create(comanda=comanda, plato=plato, cantidad=15, precio_unitario=plato.precio_venta)
+
+        from core.views import _descontar_fifo
+        _descontar_fifo(comanda)
+
+        self.assertEqual(ConsumoInsumo.objects.filter(detalle_comanda=detalle).count(), 2)
+        self.assertEqual(LoteInsumo.objects.get(pk=lote_a.pk).cantidad_disponible, Decimal('0'))
+        self.assertEqual(LoteInsumo.objects.get(pk=lote_b.pk).cantidad_disponible, Decimal('15'))
+
+    def test_stock_insuficiente_hace_rollback_total(self):
+        lote = LoteInsumo.objects.create(
+            codigo_referencia='REF-20260901-002',
+            nombre_insumo='Arroz',
+            categoria=LoteInsumo.Categoria.HARINAS,
+            precio_unitario=Decimal('5.00'),
+            cantidad_disponible=Decimal('4.00'),
+            stock_minimo=Decimal('2.00'),
+            fecha_ingreso='2026-09-01',
+            fecha_vencimiento='2026-09-30',
+        )
+        plato = Plato.objects.create(
+            nombre_plato='Arroz con pollo',
+            categoria='Platos fuertes',
+            precio_venta=Decimal('120.00'),
+            codigo='AR-001',
+            estado=True,
+        )
+        RecetaPlato.objects.create(plato=plato, insumo=lote, cantidad_requerida=Decimal('1'))
+
+        comanda = Comanda.objects.create(usuario=self.mesero, mesa=9, estado=Comanda.Estado.PENDIENTE, total=Decimal('0'))
+        DetalleComanda.objects.create(comanda=comanda, plato=plato, cantidad=5, precio_unitario=plato.precio_venta)
+
+        from core.views import _descontar_fifo
+        with self.assertRaises(ValueError):
+            _descontar_fifo(comanda)
+
+        self.assertEqual(LoteInsumo.objects.get(pk=lote.pk).cantidad_disponible, Decimal('4.00'))
+        self.assertEqual(ConsumoInsumo.objects.filter(detalle_comanda__comanda=comanda).count(), 0)
+
+    def test_cancelacion_reversa_consumos_anteriores(self):
+        lote = LoteInsumo.objects.create(
+            codigo_referencia='REF-20260901-003',
+            nombre_insumo='Salsa',
+            categoria=LoteInsumo.Categoria.OTROS,
+            precio_unitario=Decimal('3.00'),
+            cantidad_disponible=Decimal('12.00'),
+            stock_minimo=Decimal('2.00'),
+            fecha_ingreso='2026-09-01',
+            fecha_vencimiento='2026-09-30',
+        )
+        plato = Plato.objects.create(
+            nombre_plato='Pasta',
+            categoria='Platos fuertes',
+            precio_venta=Decimal('90.00'),
+            codigo='PA-001',
+            estado=True,
+        )
+        RecetaPlato.objects.create(plato=plato, insumo=lote, cantidad_requerida=Decimal('1'))
+
+        comanda = Comanda.objects.create(usuario=self.mesero, mesa=10, estado=Comanda.Estado.ENVIADA, total=Decimal('90.00'))
+        detalle = DetalleComanda.objects.create(comanda=comanda, plato=plato, cantidad=3, precio_unitario=plato.precio_venta)
+
+        from core.views import _descontar_fifo, _revertir_consumos_comanda
+        _descontar_fifo(comanda)
+        _revertir_consumos_comanda(comanda)
+
+        self.assertEqual(LoteInsumo.objects.get(pk=lote.pk).cantidad_disponible, Decimal('12.00'))
+        self.assertEqual(ConsumoInsumo.objects.filter(detalle_comanda=detalle).count(), 0)
+
+    def test_logout_registra_sesion_y_cierra_sesion(self):
+        self.client.login = lambda *args, **kwargs: True
+        response = self.client.get(reverse('logout'))
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(RegistroSesion.objects.filter(tipo_evento=RegistroSesion.TipoEvento.LOGOUT).count() >= 1, True)
+
+    def test_generacion_ref_automatico_usa_formato(self):
+        lote = LoteInsumo.objects.create(
+            codigo_referencia='',
+            nombre_insumo='Queso',
+            categoria=LoteInsumo.Categoria.LACTEOS,
+            precio_unitario=Decimal('8.00'),
+            cantidad_disponible=Decimal('8.00'),
+            stock_minimo=Decimal('2.00'),
+            fecha_ingreso=date(2026, 9, 1),
+            fecha_vencimiento=date(2026, 9, 28),
+        )
+        self.assertRegex(lote.codigo_referencia, r'^REF-20260901-\d{3}$')
+
+
+class AdminPermissionsAndUsersTests(TestCase):
+    def setUp(self):
+        self.admin = Usuario.objects.create(
+            nombre='admin',
+            rol=Usuario.Rol.ADMIN,
+            password_hash=make_password('admin123'),
+            estado=True,
+        )
+        self.mesero = Usuario.objects.create(
+            nombre='mesero',
+            rol=Usuario.Rol.EMPLEADO,
+            password_hash=make_password('mesero123'),
+            estado=True,
+        )
+        self.cajero = Usuario.objects.create(
+            nombre='cajero',
+            rol=Usuario.Rol.CAJERO,
+            password_hash=make_password('cajero123'),
+            estado=True,
+        )
+        self.session = self.client.session
+        self.session['rol'] = Usuario.Rol.ADMIN
+        self.session['usuario_id'] = self.admin.id
+        self.session.save()
+
+    def test_admin_puede_crear_usuario(self):
+        response = self.client.post(
+            reverse('vista_admin'),
+            {
+                'accion': 'guardar_usuario',
+                'nombre': 'chef',
+                'rol': Usuario.Rol.EMPLEADO,
+                'estado': 'on',
+                'password': 'chef123',
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Usuario.objects.filter(nombre='chef', rol=Usuario.Rol.EMPLEADO).exists())
+
+    def test_admin_no_se_puede_inactivar_a_si_mismo(self):
+        response = self.client.post(
+            reverse('vista_admin'),
+            {'accion': 'toggle_usuario', 'usuario_id': self.admin.id},
+            follow=True,
+        )
+
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.estado)
+        self.assertContains(response, 'No puedes desactivar')
+
+    def test_mesero_no_puede_registrar_merma(self):
+        lote = LoteInsumo.objects.create(
+            codigo_referencia='REF-20260905-001',
+            nombre_insumo='Tomate',
+            categoria=LoteInsumo.Categoria.VERDURAS,
+            precio_unitario=Decimal('3.00'),
+            cantidad_disponible=Decimal('10.00'),
+            stock_minimo=Decimal('2.00'),
+            fecha_ingreso=date(2026, 9, 5),
+            fecha_vencimiento=date(2026, 9, 25),
+        )
+        self.session['rol'] = Usuario.Rol.EMPLEADO
+        self.session.save()
+
+        response = self.client.post(
+            reverse('vista_admin'),
+            {
+                'accion': 'guardar_merma',
+                'lote': lote.id,
+                'cantidad': '2',
+                'motivo': AjusteMerma.Motivo.DESPERDICIO,
+                'observacion': 'prueba',
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(AjusteMerma.objects.count(), 0)
+
+    def test_cajero_no_puede_crear_usuarios(self):
+        self.session['rol'] = Usuario.Rol.CAJERO
+        self.session['usuario_id'] = self.cajero.id
+        self.session.save()
+
+        response = self.client.post(
+            reverse('vista_admin'),
+            {
+                'accion': 'guardar_usuario',
+                'nombre': 'otro',
+                'rol': Usuario.Rol.EMPLEADO,
+                'estado': 'on',
+                'password': 'otro123',
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Usuario.objects.filter(nombre='otro').exists())
 
 
 class FacturacionViewTests(TestCase):

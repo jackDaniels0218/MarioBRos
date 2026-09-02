@@ -10,7 +10,7 @@ from django.http import HttpResponse
 from django.shortcuts import redirect, render
 from django.utils import timezone
 
-from .forms import LoteAdminForm, MermaAdminForm, PlatoAdminForm, RecetaAdminForm, UsuarioAdminForm
+from .forms import LoteAdminForm, MermaAdminForm, PlatoAdminForm, RecetaAdminForm, UsuarioAdminForm, ResetPasswordForm
 
 from .models import (
     Comanda,
@@ -174,11 +174,42 @@ def _ensure_default_users():
 
 
 def _estado_inventario(porciones_disponibles):
+    """Calcula estado de disponibilidad basado en porciones.
+    NO USAR PARA ALERTAS DE STOCK BAJO - usar _estado_lote_insumo en su lugar."""
     if porciones_disponibles <= 0:
         return 'Agotado', 'agotado'
     if porciones_disponibles <= 5:
         return 'Stock bajo', 'bajo'
     return 'Disponible', 'disponible'
+
+
+def _estado_lote_insumo(lote, hoy=None):
+    """Calcula estado de un lote de insumo basado en stock_minimo y vencimiento.
+    
+    Returns:
+        (estado_titulo, clase_css) donde:
+        - 'Vencido' si ya pasó fecha_vencimiento
+        - 'Próximo a vencer' si vence en los próximos 7 días
+        - 'Stock crítico' si cantidad_disponible <= stock_minimo
+        - 'Disponible' en caso contrario
+    """
+    if hoy is None:
+        hoy = timezone.localdate()
+    
+    # Verificar vencimiento
+    if lote.fecha_vencimiento < hoy:
+        return 'Vencido', 'vencido'
+    
+    # Verificar próximo a vencer (próximos 7 días)
+    if lote.fecha_vencimiento <= hoy + timedelta(days=7):
+        return 'Próximo a vencer', 'pronto_a_vencer'
+    
+    # Verificar stock crítico basado en stock_minimo real del lote
+    if lote.cantidad_disponible <= lote.stock_minimo:
+        return 'Stock crítico', 'stock_critico'
+    
+    return 'Disponible', 'disponible'
+
 
 
 def _porciones_disponibles(plato):
@@ -320,6 +351,23 @@ def iniciar_sesion(request, rol='admin'):
     return render(request, 'IniciarSesion.html', {'error': error, 'rol': rol, 'titulo_rol': _get_role_title(rol)})
 
 
+def logout_view(request):
+    usuario = None
+    usuario_id = request.session.get('usuario_id')
+    if usuario_id:
+        usuario = Usuario.objects.filter(pk=usuario_id).first()
+
+    if usuario:
+        RegistroSesion.objects.create(
+            usuario=usuario,
+            tipo_evento=RegistroSesion.TipoEvento.LOGOUT,
+            ip_address=request.META.get('REMOTE_ADDR') or '0.0.0.0',
+        )
+
+    request.session.flush()
+    return redirect('inicio')
+
+
 def _vista_inventario_legacy(request):
     if request.session.get('rol') != Usuario.Rol.ADMIN:
         return redirect('iniciar_sesion')
@@ -382,6 +430,73 @@ def _admin_activity(request, usuario, accion, detalle=''):
     )
 
 
+def _handle_usuario_crud(request, usuario_actual):
+    """Maneja creación y edición de usuarios con auditoría.
+    
+    Returns:
+        (usuario_editado, error_message) o (None, None) si es POST y redirige
+    """
+    usuario_id = request.POST.get('usuario_id', '')
+    
+    # Si tiene ID, es edición
+    if usuario_id:
+        try:
+            usuario_a_editar = Usuario.objects.get(pk=int(usuario_id))
+        except (ValueError, Usuario.DoesNotExist):
+            return None, 'Usuario no encontrado.'
+    else:
+        usuario_a_editar = None
+    
+    # Crear formulario
+    form = UsuarioAdminForm(request.POST, instance=usuario_a_editar)
+    if form.is_valid():
+        usuario_guardado = form.save(commit=False)
+        
+        # Validar que no se intente desactivar a sí mismo
+        if usuario_guardado.pk == usuario_actual.pk and not usuario_guardado.estado:
+            return usuario_guardado, 'No puedes desactivar tu propio usuario.'
+        
+        usuario_guardado.save()
+        
+        # Auditar
+        if usuario_a_editar:
+            _admin_activity(request, usuario_actual, 'Editar usuario', f'{usuario_guardado.nombre} (Rol: {usuario_guardado.rol}, Estado: {"Activo" if usuario_guardado.estado else "Inactivo"})')
+        else:
+            _admin_activity(request, usuario_actual, 'Crear usuario', f'{usuario_guardado.nombre} (Rol: {usuario_guardado.rol})')
+        
+        return usuario_guardado, None
+    
+    return None, 'Error en los datos del formulario.'
+
+
+def _handle_reset_password(request, usuario_actual):
+    """Maneja reset de contraseña sin conocer la actual.
+    
+    Returns:
+        (success, message)
+    """
+    form = ResetPasswordForm(request.POST)
+    if form.is_valid():
+        try:
+            usuario = Usuario.objects.get(pk=int(form.cleaned_data['usuario_id']))
+        except (ValueError, Usuario.DoesNotExist):
+            return False, 'Usuario no encontrado.'
+        
+        # Validar que no sea su propio usuario
+        if usuario.pk == usuario_actual.pk:
+            return False, 'No puedes resetear tu propia contraseña desde aquí. Contacta al administrador superior.'
+        
+        # Cambiar contraseña
+        usuario.password_hash = make_password(form.cleaned_data['nueva_password'])
+        usuario.save(update_fields=['password_hash'])
+        
+        _admin_activity(request, usuario_actual, 'Resetear contraseña', f'Usuario {usuario.nombre}')
+        return True, 'Contraseña actualizada correctamente.'
+    
+    return False, 'Error en los datos del formulario.'
+
+
+
 def _reporte_admin(fecha):
     comandas = Comanda.objects.filter(fecha_hora__date=fecha)
     pagadas = comandas.filter(estado=Comanda.Estado.PAGADA)
@@ -393,28 +508,100 @@ def _reporte_admin(fecha):
 
 
 def _descontar_fifo(comanda):
-    consumos = []
-    for detalle in comanda.detalles.select_related('plato').all():
-        for receta in detalle.plato.receta.select_related('insumo').all():
-            requerido = receta.cantidad_requerida * detalle.cantidad
-            lotes = LoteInsumo.objects.filter(
-                nombre_insumo=receta.insumo.nombre_insumo,
-                cantidad_disponible__gt=0,
-            ).order_by('fecha_ingreso', 'id')
-            restante = requerido
+    if comanda is None:
+        return
+
+    if ConsumoInsumo.objects.filter(detalle_comanda__comanda=comanda).exists():
+        return
+
+    with transaction.atomic():
+        detalles = list(comanda.detalles.select_related('plato').prefetch_related('plato__receta__insumo').all())
+        if not detalles:
+            return
+
+        requerimientos = {}
+        for detalle in detalles:
+            for receta in detalle.plato.receta.select_related('insumo').all():
+                insumo_nombre = receta.insumo.nombre_insumo
+                requerido = Decimal(str(receta.cantidad_requerida)) * Decimal(detalle.cantidad)
+                requerimientos[insumo_nombre] = requerimientos.get(insumo_nombre, Decimal('0')) + requerido
+
+        lotes_disponibles = {}
+        nombres = list(requerimientos.keys())
+        if nombres:
+            hoy = timezone.localdate()
+            lotes = list(
+                LoteInsumo.objects.select_for_update().filter(
+                    nombre_insumo__in=nombres,
+                    cantidad_disponible__gt=0,
+                    fecha_vencimiento__gte=hoy,  # Excluir lotes vencidos
+                ).order_by('fecha_ingreso', 'id')
+            )
             for lote in lotes:
-                usado = min(restante, lote.cantidad_disponible)
-                if usado <= 0:
-                    continue
-                lote.cantidad_disponible -= usado
-                lote.save(update_fields=['cantidad_disponible'])
-                consumos.append(ConsumoInsumo(detalle_comanda=detalle, lote=lote, cantidad=usado, costo_unitario=lote.precio_unitario))
-                restante -= usado
-                if restante <= 0:
-                    break
-            if restante > 0:
-                raise ValueError(f'Stock insuficiente para {receta.insumo.nombre_insumo}.')
-    ConsumoInsumo.objects.bulk_create(consumos)
+                lotes_disponibles.setdefault(lote.nombre_insumo, []).append(lote)
+
+        for nombre_insumo, requerido in requerimientos.items():
+            disponible = sum((Decimal(str(lote.cantidad_disponible)) for lote in lotes_disponibles.get(nombre_insumo, [])), Decimal('0'))
+            if disponible < requerido:
+                raise ValueError(f'Stock insuficiente para {nombre_insumo}.')
+
+        consumos = []
+        for detalle in detalles:
+            detalle_consumos = []
+            for receta in detalle.plato.receta.select_related('insumo').all():
+                insumo_nombre = receta.insumo.nombre_insumo
+                restante = Decimal(str(receta.cantidad_requerida)) * Decimal(detalle.cantidad)
+                lotes = list(lotes_disponibles.get(insumo_nombre, []))
+                for lote in lotes:
+                    if restante <= 0:
+                        break
+                    if Decimal(str(lote.cantidad_disponible)) <= 0:
+                        continue
+                    usado = min(restante, Decimal(str(lote.cantidad_disponible)))
+                    if usado <= 0:
+                        continue
+                    lote.cantidad_disponible = Decimal(str(lote.cantidad_disponible)) - usado
+                    detalle_consumos.append((lote, usado))
+                    consumos.append(
+                        ConsumoInsumo(
+                            detalle_comanda=detalle,
+                            lote=lote,
+                            cantidad=usado,
+                            costo_unitario=lote.precio_unitario,
+                        )
+                    )
+                    restante -= usado
+                if restante > 0:
+                    raise ValueError(f'Stock insuficiente para {insumo_nombre}.')
+            if detalle_consumos:
+                detalle.lote_descontado = detalle_consumos[0][0]
+                detalle.save(update_fields=['lote_descontado'])
+
+        for lote in [lote for lotes in lotes_disponibles.values() for lote in lotes]:
+            lote.save(update_fields=['cantidad_disponible'])
+
+        if consumos:
+            ConsumoInsumo.objects.bulk_create(consumos)
+
+
+def _revertir_consumos_comanda(comanda):
+    if comanda is None:
+        return
+
+    with transaction.atomic():
+        consumos = list(
+            ConsumoInsumo.objects.select_for_update().filter(detalle_comanda__comanda=comanda).select_related('lote')
+        )
+        if not consumos:
+            return
+
+        for consumo in consumos:
+            lote = consumo.lote
+            lote.cantidad_disponible = Decimal(str(lote.cantidad_disponible)) + Decimal(str(consumo.cantidad))
+            lote.save(update_fields=['cantidad_disponible'])
+
+        ConsumoInsumo.objects.filter(detalle_comanda__comanda=comanda).delete()
+        DetalleComanda.objects.filter(comanda=comanda).update(lote_descontado=None)
 
 
 def reporte_admin_exportar(request, formato):
@@ -452,60 +639,168 @@ def vista_admin(request):
         return redirect('iniciar_sesion')
 
     usuario = Usuario.objects.filter(id=request.session.get('usuario_id'), rol=Usuario.Rol.ADMIN, estado=True).first()
+    if not usuario:
+        return redirect('iniciar_sesion')
+    
     seccion = request.GET.get('seccion', 'dashboard')
-    if seccion == 'inventario' and request.method == 'POST' and request.POST.get('accion') == 'stock':
-        lote = LoteInsumo.objects.get(pk=request.POST['lote_id'])
-        cantidad = Decimal(request.POST.get('cantidad', '0'))
-        if cantidad > 0:
-            lote.cantidad_disponible += cantidad
-            lote.save(update_fields=['cantidad_disponible'])
-            _admin_activity(request, usuario, 'Actualizar stock', f'Lote {lote.id}: +{cantidad}')
-        return redirect('vista_admin')
-
+    error = None
+    
+    # ===== MANEJO DE USUARIOS =====
+    if request.method == 'POST' and request.POST.get('accion') == 'guardar_usuario':
+        usuario_guardado, error = _handle_usuario_crud(request, usuario)
+        if error:
+            context_error = {
+                'seccion': 'usuarios',
+                'error': error,
+                'usuarios': Usuario.objects.order_by('nombre'),
+                'form_usuario': UsuarioAdminForm(),
+                'form_lote': LoteAdminForm(),
+                'form_plato': PlatoAdminForm(),
+                'form_receta': RecetaAdminForm(),
+                'form_merma': MermaAdminForm(),
+            }
+            return render(request, 'AdminPanel.html', context_error)
+        if usuario_guardado:
+            return redirect('/admin/inicio/?seccion=usuarios')
+    
+    # ===== RESET DE CONTRASEÑA =====
+    if request.method == 'POST' and request.POST.get('accion') == 'reset_password':
+        success, message = _handle_reset_password(request, usuario)
+        if success:
+            return redirect('/admin/inicio/?seccion=usuarios')
+        else:
+            context_error = {
+                'seccion': 'usuarios',
+                'error': message,
+                'usuarios': Usuario.objects.order_by('nombre'),
+                'form_usuario': UsuarioAdminForm(),
+                'form_lote': LoteAdminForm(),
+                'form_plato': PlatoAdminForm(),
+                'form_receta': RecetaAdminForm(),
+                'form_merma': MermaAdminForm(),
+            }
+            return render(request, 'AdminPanel.html', context_error)
+    
+    # ===== ACTIVAR/DESACTIVAR USUARIO =====
     if request.method == 'POST' and request.POST.get('accion') == 'toggle_usuario':
         item = Usuario.objects.get(pk=request.POST['usuario_id'])
-        if item.pk != usuario.pk:
-            item.estado = not item.estado
-            item.save(update_fields=['estado'])
-            _admin_activity(request, usuario, 'Cambiar estado de usuario', item.nombre)
+        if item.pk == usuario.pk:
+            context_error = {
+                'seccion': 'usuarios',
+                'error': 'No puedes desactivar tu propio usuario.',
+                'usuarios': Usuario.objects.order_by('nombre'),
+                'form_usuario': UsuarioAdminForm(),
+                'form_lote': LoteAdminForm(),
+                'form_plato': PlatoAdminForm(),
+                'form_receta': RecetaAdminForm(),
+                'form_merma': MermaAdminForm(),
+            }
+            return render(request, 'AdminPanel.html', context_error)
+        item.estado = not item.estado
+        item.save(update_fields=['estado'])
+        accion_texto = 'Activar usuario' if item.estado else 'Desactivar usuario'
+        _admin_activity(request, usuario, accion_texto, item.nombre)
         return redirect('/admin/inicio/?seccion=usuarios')
 
-    form_targets = {
-        'guardar_usuario': (UsuarioAdminForm, 'usuarios'),
-        'guardar_lote': (LoteAdminForm, 'lotes'),
-        'guardar_plato': (PlatoAdminForm, 'platos'),
-        'guardar_receta': (RecetaAdminForm, 'recetas'),
-        'guardar_merma': (MermaAdminForm, 'mermas'),
-    }
-    if request.method == 'POST' and request.POST.get('accion') in form_targets:
-        form_class, target = form_targets[request.POST['accion']]
-        form = form_class(request.POST)
+    # ===== LOTES - NO permitir edición directa de cantidad =====
+    if request.method == 'POST' and request.POST.get('accion') == 'guardar_lote':
+        form = LoteAdminForm(request.POST)
         if form.is_valid():
-            obj = form.save(commit=False)
-            if request.POST['accion'] == 'guardar_merma':
-                if obj.cantidad <= 0 or obj.cantidad > obj.lote.cantidad_disponible:
-                    return render(request, 'AdminPanel.html', {'seccion': 'mermas', 'form_merma': form, 'error': 'La cantidad de merma supera el stock disponible.'})
-                obj.usuario = usuario
-                obj.lote.cantidad_disponible -= obj.cantidad
-                obj.lote.save(update_fields=['cantidad_disponible'])
-            obj.save()
-            _admin_activity(request, usuario, request.POST['accion'], str(obj))
-            return redirect(f'/admin/inicio/?seccion={target}')
-
+            lote = form.save(commit=False)
+            # Si es edición y ya existe, preservar cantidad_disponible
+            if lote.pk:
+                lote_anterior = LoteInsumo.objects.get(pk=lote.pk)
+                lote.cantidad_disponible = lote_anterior.cantidad_disponible
+            else:
+                # Para creación, si no se especifica cantidad, asumir 0 (entraría por entrada de inventario)
+                if not lote.cantidad_disponible:
+                    lote.cantidad_disponible = Decimal('0')
+            lote.save()
+            accion_texto = 'Editar lote' if lote.pk else 'Crear lote'
+            _admin_activity(request, usuario, accion_texto, f'{lote.codigo_referencia} - {lote.nombre_insumo}')
+            return redirect('/admin/inicio/?seccion=lotes')
+    
+    # ===== PLATOS =====
+    if request.method == 'POST' and request.POST.get('accion') == 'guardar_plato':
+        form = PlatoAdminForm(request.POST)
+        if form.is_valid():
+            plato = form.save()
+            accion_texto = 'Editar plato' if plato.pk else 'Crear plato'
+            _admin_activity(request, usuario, accion_texto, plato.nombre_plato)
+            return redirect('/admin/inicio/?seccion=platos')
+    
+    # ===== RECETAS =====
+    if request.method == 'POST' and request.POST.get('accion') == 'guardar_receta':
+        form = RecetaAdminForm(request.POST)
+        if form.is_valid():
+            receta = form.save()
+            _admin_activity(request, usuario, 'Guardar receta', f'{receta.plato.nombre_plato} - {receta.insumo.nombre_insumo} ({receta.cantidad_requerida})')
+            return redirect('/admin/inicio/?seccion=recetas')
+    
+    # ===== MERMAS CON TRANSACCIÓN =====
+    if request.method == 'POST' and request.POST.get('accion') == 'guardar_merma':
+        form = MermaAdminForm(request.POST)
+        if form.is_valid():
+            try:
+                with transaction.atomic():
+                    merma = form.save(commit=False)
+                    lote = merma.lote
+                    
+                    # Validaciones
+                    if merma.cantidad <= 0:
+                        raise ValueError('La cantidad debe ser mayor a cero.')
+                    if merma.cantidad > lote.cantidad_disponible:
+                        raise ValueError('La cantidad de merma supera el stock disponible.')
+                    
+                    merma.usuario = usuario
+                    merma.save()
+                    
+                    # Descontar del inventario dentro de la transacción
+                    lote.cantidad_disponible -= merma.cantidad
+                    lote.save(update_fields=['cantidad_disponible'])
+                    
+                    _admin_activity(request, usuario, 'Registrar merma', f'Lote {lote.codigo_referencia}: {merma.cantidad} ({merma.motivo})')
+                    return redirect('/admin/inicio/?seccion=mermas')
+            except (ValueError, Exception) as e:
+                error = str(e)
+    
+    # ===== CONTEXTO PARA DASHBOARD =====
     hoy = timezone.localdate()
     comandas_hoy = Comanda.objects.filter(fecha_hora__date=hoy)
     ventas = Factura.objects.filter(fecha_hora__date=hoy, estado=Factura.Estado.PAGADA)
+    
+    # Calcular stock crítico usando stock_minimo real de cada lote
+    lotes_todos = LoteInsumo.objects.all()
+    stock_critico = []
+    por_vencer = []
+    lotes_vencidos = []
+    
+    for lote in lotes_todos:
+        estado, clase = _estado_lote_insumo(lote, hoy)
+        if estado == 'Vencido':
+            lotes_vencidos.append({'lote': lote, 'estado': estado, 'clase': clase})
+        elif estado == 'Stock crítico':
+            stock_critico.append({'lote': lote, 'estado': estado, 'clase': clase})
+        elif estado == 'Próximo a vencer':
+            por_vencer.append({'lote': lote, 'estado': estado, 'clase': clase})
+    
+    stock_critico = stock_critico[:10]
+    por_vencer = por_vencer[:10]
+    lotes_vencidos = lotes_vencidos[:10]
+    
     context = {
         'seccion': seccion,
+        'error': error,
         'ventas_dia': ventas.aggregate(total=Sum('total'))['total'] or Decimal('0'),
         'comandas_dia': comandas_hoy.count(),
         'pendientes': comandas_hoy.filter(estado=Comanda.Estado.PENDIENTE).count(),
         'enviadas': comandas_hoy.filter(estado=Comanda.Estado.ENVIADA).count(),
         'pagadas': comandas_hoy.filter(estado=Comanda.Estado.PAGADA).count(),
         'canceladas': comandas_hoy.filter(estado=Comanda.Estado.CANCELADA).count(),
-        'valor_inventario': sum((lote.cantidad_disponible * lote.precio_unitario for lote in LoteInsumo.objects.all()), Decimal('0')),
-        'stock_critico': LoteInsumo.objects.filter(cantidad_disponible__lte=5).order_by('cantidad_disponible')[:10],
-        'por_vencer': LoteInsumo.objects.filter(fecha_vencimiento__gte=hoy, fecha_vencimiento__lte=hoy + timedelta(days=30)).order_by('fecha_vencimiento')[:10],
+        'valor_inventario': sum((lote.cantidad_disponible * lote.precio_unitario for lote in lotes_todos), Decimal('0')),
+        'stock_critico': stock_critico,
+        'por_vencer': por_vencer,
+        'lotes_vencidos': lotes_vencidos,
         'usuarios': Usuario.objects.order_by('nombre'),
         'lotes': LoteInsumo.objects.order_by('-fecha_ingreso'),
         'platos': Plato.objects.order_by('categoria', 'nombre_plato'),
@@ -521,22 +816,26 @@ def vista_admin(request):
         'form_receta': RecetaAdminForm(),
         'form_merma': MermaAdminForm(),
     }
+    
     if seccion == 'reportes':
         context['fecha_reporte'] = request.GET.get('fecha') or str(hoy)
         context['reporte'] = _reporte_admin(context['fecha_reporte'])
+    
     context['mesas_ocupadas'] = sum(1 for mesa in context['mesas'] if mesa['comanda'])
+    
+    # Inventario de platos
     context['inventario'] = []
     for plato in Plato.objects.filter(estado=True).prefetch_related('receta__insumo').order_by('categoria', 'nombre_plato'):
         porciones, insumo = _porciones_disponibles(plato)
         estado, clase = _estado_inventario(porciones)
-        context['inventario'].append({'plato': plato, 'insumo_critico': insumo, 'porciones_disponibles': porciones, 'estado_titulo': estado, 'estado_clase': clase})
-    if seccion == 'inventario':
-        platos = Plato.objects.filter(estado=True).prefetch_related('receta__insumo').order_by('categoria', 'nombre_plato')
-        context['inventario'] = []
-        for plato in platos:
-            porciones, insumo = _porciones_disponibles(plato)
-            estado, clase = _estado_inventario(porciones)
-            context['inventario'].append({'plato': plato, 'insumo_critico': insumo, 'porciones_disponibles': porciones, 'estado_titulo': estado, 'estado_clase': clase})
+        context['inventario'].append({
+            'plato': plato,
+            'insumo_critico': insumo,
+            'porciones_disponibles': porciones,
+            'estado_titulo': estado,
+            'estado_clase': clase
+        })
+    
     return render(request, 'AdminPanel.html', context)
 
 
@@ -634,11 +933,33 @@ def vista_mesero(request):
                     info = 'Producto agregado correctamente.'
                     return redirect('vista_mesero')
 
+        if accion in ['cancelar', 'cancelar_comanda'] and comanda_id:
+            comanda = Comanda.objects.filter(pk=comanda_id).first()
+            if comanda is None:
+                error = 'La comanda no existe.'
+            elif comanda.estado == Comanda.Estado.PAGADA:
+                error = 'No se permite cancelar una comanda pagada.'
+            else:
+                if ConsumoInsumo.objects.filter(detalle_comanda__comanda=comanda).exists():
+                    _revertir_consumos_comanda(comanda)
+                comanda.total = Decimal('0')
+                comanda.estado = Comanda.Estado.CANCELADA
+                comanda.save(update_fields=['estado', 'total'])
+                DetalleComanda.objects.filter(comanda=comanda).delete()
+                request.session['mesa_actual'] = None
+                info = f'Comanda #{comanda.id} cancelada.'
+                return redirect('vista_mesero')
+
         if accion in ['incrementar', 'disminuir', 'eliminar'] and detalle_id:
             detalle = DetalleComanda.objects.filter(pk=detalle_id).select_related('comanda', 'plato').first()
             if detalle is None:
                 error = 'No se encontró el detalle de la comanda.'
             else:
+                comanda = detalle.comanda
+                if comanda.estado in [Comanda.Estado.ENVIADA, Comanda.Estado.PAGADA]:
+                    error = 'La comanda ya fue enviada; no se pueden modificar detalles.'
+                    return redirect('vista_mesero')
+
                 if accion == 'incrementar':
                     detalle.cantidad += 1
                     detalle.save(update_fields=['cantidad'])
@@ -669,6 +990,10 @@ def vista_mesero(request):
             comanda = Comanda.objects.filter(pk=comanda_id).prefetch_related('detalles__plato__receta__insumo').first()
             if comanda is None:
                 error = 'La comanda no existe.'
+            elif comanda.estado == Comanda.Estado.CANCELADA:
+                error = 'No se puede enviar una comanda cancelada.'
+            elif comanda.estado == Comanda.Estado.PAGADA:
+                error = 'La comanda ya fue pagada.'
             else:
                 if not ConsumoInsumo.objects.filter(detalle_comanda__comanda=comanda).exists():
                     try:
@@ -679,7 +1004,7 @@ def vista_mesero(request):
                     except ValueError as exc:
                         error = str(exc)
                         return redirect('vista_mesero')
-                else:
+                elif comanda.estado == Comanda.Estado.PENDIENTE:
                     comanda.estado = Comanda.Estado.ENVIADA
                     comanda.save(update_fields=['estado'])
 
