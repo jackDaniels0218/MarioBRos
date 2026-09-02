@@ -22,6 +22,7 @@ from core import views
 urlpatterns = [
     path('', views.inicio, name='inicio'),
     path('login/', views.iniciar_sesion, name='iniciar_sesion'),
+    path('logout/', views.logout_view, name='logout'),
     path('login/<str:rol>/', views.iniciar_sesion, name='iniciar_sesion_rol'),
     path('admin/inicio/', views.vista_admin, name='vista_admin'),
     path('admin/panel/', views.vista_admin, name='panel_admin'),
