@@ -529,10 +529,12 @@ def _descontar_fifo(comanda):
         lotes_disponibles = {}
         nombres = list(requerimientos.keys())
         if nombres:
+            hoy = timezone.localdate()
             lotes = list(
                 LoteInsumo.objects.select_for_update().filter(
                     nombre_insumo__in=nombres,
                     cantidad_disponible__gt=0,
+                    fecha_vencimiento__gte=hoy,  # Excluir lotes vencidos
                 ).order_by('fecha_ingreso', 'id')
             )
             for lote in lotes:
@@ -777,8 +779,7 @@ def vista_admin(request):
         estado, clase = _estado_lote_insumo(lote, hoy)
         if estado == 'Vencido':
             lotes_vencidos.append({'lote': lote, 'estado': estado, 'clase': clase})
-        elif estado in ['Stock crítico', 'Próximo a vencer']:
-            # Mostrar ambas categorías en stock_critico
+        elif estado == 'Stock crítico':
             stock_critico.append({'lote': lote, 'estado': estado, 'clase': clase})
         elif estado == 'Próximo a vencer':
             por_vencer.append({'lote': lote, 'estado': estado, 'clase': clase})
