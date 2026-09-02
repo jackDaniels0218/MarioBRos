@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}MarioBRos{% endblock %}</title>
+    <style>
+        :root { --principal: #f75e54; --fondo: #f6f3f2; --texto: #2d2d2d; --borde: #e8e2df; }
+        * { box-sizing: border-box; }
+        body { margin: 0; font-family: Arial, sans-serif; background: var(--fondo); color: var(--texto); }
+        .layout { min-height: 100vh; display: flex; }
+        .sidebar { width: 230px; padding: 20px 14px; background: #f3f1f0; border-right: 1px solid var(--borde); }
+        .brand { font-size: 22px; font-weight: bold; margin: 0 10px 20px; }
+        nav { display: grid; gap: 7px; }
+        nav a, .button { display: inline-block; padding: 10px 12px; border-radius: 8px; text-decoration: none; color: inherit; }
+        nav a:hover, .button.primary { background: var(--principal); color: white; }
+        .content { flex: 1; min-width: 0; padding: 28px; }
+        .card { background: white; border: 1px solid var(--borde); border-radius: 10px; padding: 20px; margin-bottom: 18px; }
+        .toolbar, form { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+        input, select { min-height: 38px; border: 1px solid var(--borde); border-radius: 6px; padding: 7px 9px; }
+        button, .button { border: 0; background: #ece9e8; cursor: pointer; font-weight: bold; }
+        table { width: 100%; border-collapse: collapse; overflow: auto; }
+        th, td { padding: 10px; border-bottom: 1px solid var(--borde); text-align: left; }
+        th { color: #666; font-size: 12px; text-transform: uppercase; }
+        .alert { padding: 10px 12px; background: #fff2df; border-radius: 7px; margin-bottom: 12px; }
+        .error { background: #ffeceb; color: #9b3028; }
+        @media (max-width: 700px) { .layout { display: block; } .sidebar { width: 100%; } .content { padding: 16px; } table { display: block; overflow-x: auto; white-space: nowrap; } }
+    </style>
+</head>
+<body>
+<div class="layout">
+    <aside class="sidebar">
+        <div class="brand">MarioBRos</div>
+        <nav>
+            <a href="{% url 'vista_admin' %}">Inventario</a>
+            <a href="{% url 'vista_menu' %}">Menu</a>
+            <a href="{% url 'vista_mesero' %}">Comandas</a>
+            <a href="{% url 'vista_cajero' %}">Caja</a>
+            <a href="{% url 'vista_facturacion' %}">Facturacion</a>
+            {% if usuario.rol == 'admin' %}<a href="{% url 'usuarios' %}">Usuarios</a><a href="{% url 'lotes' %}">Lotes</a><a href="{% url 'platos' %}">Platos</a><a href="{% url 'recetas' %}">Recetas</a>{% endif %}
+            <a href="{% url 'reportes' %}">Reportes</a>
+            <a href="{% url 'logout' %}">Cerrar sesion</a>
+        </nav>
+    </aside>
+    <main class="content">
+        {% for message in messages %}<div class="alert {% if message.tags == 'error' %}error{% endif %}">{{ message }}</div>{% endfor %}
+        {% block content %}{% endblock %}
+    </main>
+</div>
+</body>
+</html>

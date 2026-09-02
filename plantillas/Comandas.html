@@ -88,7 +88,22 @@
         .secondary-btn {
             background: #f6f3f2; border: 1px solid var(--borde); border-radius: 8px; padding: 9px 12px; color: var(--texto); font-weight: 700; cursor: pointer;
         }
-        @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); } .content { padding: 20px 18px; } }
+        @media (max-width: 900px) {
+            .layout { flex-direction: column; }
+            .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); }
+            .content { padding: 20px 18px; }
+            .grid { grid-template-columns: 1fr; }
+            .topbar { flex-direction: column; align-items: flex-start; }
+        }
+
+        @media (max-width: 560px) {
+            .mesa-grid { grid-template-columns: repeat(2, minmax(70px, 1fr)); }
+            .menu-card form { grid-template-columns: 1fr; }
+            .command-head { flex-direction: column; align-items: flex-start; }
+            .footer-actions { flex-direction: column; }
+            .footer-actions form { width: 100%; }
+            .footer-actions button { width: 100%; }
+        }
     </style>
 </head>
 <body>

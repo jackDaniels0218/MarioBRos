@@ -362,6 +362,8 @@
             .app { flex-direction: column; }
             .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); }
             .content { padding: 20px 18px 30px; }
+            .stats { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+            .topbar { flex-direction: column; align-items: flex-start; gap: 12px; }
             .table-header { display: none; }
             .table-row {
                 grid-template-columns: 1fr;
@@ -371,6 +373,21 @@
             .filters {
                 flex-direction: column;
                 align-items: stretch;
+            }
+        }
+
+        @media (max-width: 560px) {
+            .stats { grid-template-columns: 1fr; }
+            .filter-tabs {
+                overflow-x: auto;
+                white-space: nowrap;
+                padding-bottom: 4px;
+            }
+            .table-wrap {
+                overflow-x: auto;
+            }
+            .table-row {
+                min-width: 320px;
             }
         }
     </style>

@@ -66,7 +66,29 @@
         }
         .meta { color: var(--muted); font-size: 12px; }
         .money { font-size: 18px; font-weight: 700; }
-        @media (max-width: 900px) { .layout { flex-direction: column; } .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); } .content { padding: 20px 18px; } .panels { grid-template-columns: 1fr; } }
+        @media (max-width: 900px) {
+            .layout { flex-direction: column; }
+            .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); }
+            .content { padding: 20px 18px; }
+            .panels { grid-template-columns: 1fr; }
+            .topbar { flex-direction: column; align-items: flex-start; }
+        }
+
+        @media (max-width: 640px) {
+            table, thead, tbody, th, td, tr { display: block; }
+            thead { display: none; }
+            tr { border-bottom: 1px solid var(--borde); padding: 12px 0; }
+            td { border: none; padding: 8px 0; }
+            td::before {
+                content: attr(data-label);
+                display: block;
+                color: var(--muted);
+                font-size: 11px;
+                text-transform: uppercase;
+                margin-bottom: 4px;
+            }
+            .btn-pay { width: 100%; }
+        }
     </style>
 </head>
 <body>
@@ -107,11 +129,11 @@
                         <tbody>
                             {% for factura in facturas %}
                             <tr>
-                                <td>{{ factura.numero }}</td>
-                                <td>{{ factura.cliente|default:'Cliente general' }}</td>
-                                <td>${{ factura.total }}</td>
-                                <td><span class="status {{ factura.estado }}">{{ factura.get_estado_display }}</span></td>
-                                <td>
+                                <td data-label="Factura">{{ factura.numero }}</td>
+                                <td data-label="Cliente">{{ factura.cliente|default:'Cliente general' }}</td>
+                                <td data-label="Total">${{ factura.total }}</td>
+                                <td data-label="Estado"><span class="status {{ factura.estado }}">{{ factura.get_estado_display }}</span></td>
+                                <td data-label="Acción">
                                     <form method="post">
                                         {% csrf_token %}
                                         <input type="hidden" name="accion" value="pagar">

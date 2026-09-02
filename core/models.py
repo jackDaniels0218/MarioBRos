@@ -83,6 +83,16 @@ class LoteInsumo(models.Model):
         verbose_name_plural = "Lotes de insumos"
         ordering = ['fecha_ingreso']  # soporta el descuento PEPS/FIFO (Actividad #12)
 
+    def save(self, *args, **kwargs):
+        if not self.codigo_referencia:
+            fecha = self.fecha_ingreso or timezone.localdate()
+            base = f'REF-{fecha:%Y%m%d}-'
+            consecutivo = LoteInsumo.objects.filter(
+                codigo_referencia__startswith=base
+            ).count() + 1
+            self.codigo_referencia = f'{base}{consecutivo:03d}'
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return self.codigo_referencia
 
@@ -161,7 +171,8 @@ class DetalleComanda(models.Model):
     precio_unitario = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     comentario = models.TextField(blank=True)
     lote_descontado = models.ForeignKey(
-        LoteInsumo, on_delete=models.PROTECT, related_name='detalles_descontados'
+        LoteInsumo, on_delete=models.PROTECT, related_name='detalles_descontados',
+        null=True, blank=True,
     )
 
     class Meta:
@@ -203,6 +214,21 @@ class AjusteMerma(models.Model):
         return f"Merma {self.id} - {self.lote}"
 
 
+class MovimientoInventario(models.Model):
+    detalle = models.ForeignKey(
+        DetalleComanda, on_delete=models.CASCADE, related_name='movimientos'
+    )
+    lote = models.ForeignKey(
+        LoteInsumo, on_delete=models.PROTECT, related_name='movimientos'
+    )
+    cantidad = models.DecimalField(max_digits=10, decimal_places=2)
+    fecha_hora = models.DateTimeField(auto_now_add=True)
+    revertido = models.BooleanField(default=False)
+
+    def __str__(self):
+        return f"{self.detalle} - {self.lote} - {self.cantidad}"
+
+
 class Factura(models.Model):
     class MetodoPago(models.TextChoices):
         EFECTIVO = 'efectivo', 'Efectivo'
@@ -223,7 +249,7 @@ class Factura(models.Model):
     impuesto = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     metodo_pago = models.CharField(max_length=20, choices=MetodoPago.choices, default=MetodoPago.EFECTIVO)
-    estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PAGADA)
+    estado = models.CharField(max_length=20, choices=Estado.choices, default=Estado.PENDIENTE)
     observacion = models.TextField(blank=True)
 
     class Meta:

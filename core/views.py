@@ -1,8 +1,13 @@
 from decimal import Decimal, InvalidOperation
+from datetime import timedelta
 
+from django.contrib import messages
 from django.contrib.auth.hashers import check_password, make_password
-from django.db import connection
-from django.shortcuts import redirect, render
+from django.core.exceptions import ValidationError
+from django.db import IntegrityError, connection, transaction
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render
+from django.utils import timezone
 
 from .models import (
     Comanda,
@@ -10,10 +15,51 @@ from .models import (
     DetalleFactura,
     Factura,
     LoteInsumo,
+    MovimientoInventario,
     Plato,
     RegistroSesion,
     Usuario,
 )
+
+CATEGORIES = ['Fuertes', 'Parrilla', 'Mariscos', 'Sopas', 'Entradas']
+
+
+def _current_user(request):
+    usuario = Usuario.objects.filter(
+        id=request.session.get('usuario_id'), estado=True
+    ).first()
+    if usuario is None and request.session.get('rol'):
+        usuario = Usuario.objects.filter(
+            rol=request.session.get('rol'), estado=True
+        ).order_by('id').first()
+    return usuario
+
+
+def _has_role(request, roles):
+    usuario = _current_user(request)
+    return usuario is not None and usuario.rol in roles
+
+
+def _ip(request):
+    return request.META.get('REMOTE_ADDR') or '0.0.0.0'
+
+
+def _safe_int(value, default=1, minimum=1, maximum=1000):
+    try:
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(result, maximum))
+
+
+def _safe_positive_decimal(value):
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    if not result.is_finite() or result <= 0:
+        return None
+    return result
 
 
 def format_money(value):
@@ -124,7 +170,7 @@ def _safe_comandas(limit=None):
                 'cantidad': cantidad or 0,
                 'precio_unitario': _safe_decimal(precio_unitario),
                 'comentario': comentario or '',
-                'plato': None,
+                'plato': Plato.objects.filter(pk=plato_id).first(),
             })()
             detalles.append(detalle)
 
@@ -531,4 +577,387 @@ def detalle_factura(request, factura_id):
     factura.subtotal_display = format_money(factura.subtotal)
     factura.impuesto_display = format_money(factura.impuesto)
     return render(request, 'Factura.html', {'factura': factura})
+
+
+def logout_view(request):
+    usuario = _current_user(request)
+    if usuario:
+        RegistroSesion.objects.create(
+            usuario=usuario,
+            tipo_evento=RegistroSesion.TipoEvento.LOGOUT,
+            ip_address=_ip(request),
+        )
+    request.session.flush()
+    messages.success(request, 'Sesion cerrada correctamente.')
+    return redirect('inicio')
+
+
+def dashboard(request):
+    usuario = _current_user(request)
+    if not usuario:
+        return redirect('iniciar_sesion')
+    destinos = {
+        Usuario.Rol.ADMIN: 'vista_admin',
+        Usuario.Rol.EMPLEADO: 'vista_mesero',
+        Usuario.Rol.CAJERO: 'vista_cajero',
+    }
+    return redirect(destinos.get(usuario.rol, 'inicio'))
+
+
+def _post_decimal(request, name, default=None):
+    value = request.POST.get(name, '')
+    if value in ('', None):
+        return default
+    try:
+        result = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return default
+    return result if result.is_finite() else default
+
+
+def _inventory_data():
+    data = []
+    for plato in Plato.objects.filter(estado=True).prefetch_related('receta__insumo'):
+        receta = list(plato.receta.all())
+        porciones = [
+            Decimal(str(item.insumo.cantidad_disponible)) / item.cantidad_requerida
+            for item in receta
+            if item.cantidad_requerida > 0
+        ]
+        cantidad = int(min(porciones)) if porciones else 0
+        estado = 'Agotado' if cantidad <= 0 else (
+            'Stock bajo' if cantidad <= 5 else 'Disponible'
+        )
+        data.append({
+            'plato': plato,
+            'porciones': cantidad,
+            'porciones_disponibles': cantidad,
+            'estado': estado,
+            'estado_titulo': estado,
+            'estado_clase': estado.lower().replace(' ', '-'),
+            'receta': receta,
+            'lotes': receta,
+            'insumo_critico': receta[0].insumo.nombre_insumo if receta else 'Sin receta',
+        })
+    return data
+
+
+def _fifo_descontar(detalle):
+    movimientos = []
+    for receta in detalle.plato.receta.select_related('insumo').order_by(
+        'insumo__fecha_ingreso', 'insumo_id'
+    ):
+        restante = receta.cantidad_requerida * detalle.cantidad
+        lotes = LoteInsumo.objects.select_for_update().filter(
+            nombre_insumo=receta.insumo.nombre_insumo,
+            categoria=receta.insumo.categoria,
+            cantidad_disponible__gt=0,
+        ).order_by('fecha_ingreso', 'id')
+        for lote in lotes:
+            if restante <= 0:
+                break
+            tomado = min(lote.cantidad_disponible, restante)
+            lote.cantidad_disponible -= tomado
+            lote.save(update_fields=['cantidad_disponible'])
+            MovimientoInventario.objects.create(
+                detalle=detalle, lote=lote, cantidad=tomado
+            )
+            movimientos.append((lote, tomado))
+            restante -= tomado
+        if restante > 0:
+            for lote, tomado in reversed(movimientos):
+                lote.cantidad_disponible += tomado
+                lote.save(update_fields=['cantidad_disponible'])
+            MovimientoInventario.objects.filter(
+                detalle=detalle, revertido=False
+            ).delete()
+            raise ValueError(f'Stock insuficiente para {receta.insumo.nombre_insumo}.')
+    return movimientos
+
+
+@transaction.atomic
+def enviar_comanda(comanda):
+    if comanda.estado != Comanda.Estado.PENDIENTE:
+        return
+    for detalle in comanda.detalles.select_related('plato').all():
+        _fifo_descontar(detalle)
+    comanda.estado = Comanda.Estado.ENVIADA
+    comanda.save(update_fields=['estado'])
+
+
+def cancelar_comanda(comanda):
+    with transaction.atomic():
+        for movimiento in MovimientoInventario.objects.select_for_update().filter(
+            detalle__comanda=comanda, revertido=False
+        ):
+            movimiento.lote.cantidad_disponible += movimiento.cantidad
+            movimiento.lote.save(update_fields=['cantidad_disponible'])
+            movimiento.revertido = True
+            movimiento.save(update_fields=['revertido'])
+        comanda.estado = Comanda.Estado.CANCELADA
+        comanda.save(update_fields=['estado'])
+
+
+def usuarios(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN]):
+        return redirect('inicio')
+    if request.method == 'POST':
+        accion = request.POST.get('accion')
+        usuario = get_object_or_404(Usuario, pk=request.POST.get('id')) if request.POST.get('id') else None
+        nombre = request.POST.get('nombre', '').strip()
+        if accion == 'crear' and nombre and request.POST.get('password'):
+            Usuario.objects.create(
+                nombre=nombre, rol=request.POST.get('rol', Usuario.Rol.EMPLEADO),
+                password_hash=make_password(request.POST['password']), estado=True,
+            )
+        elif accion == 'editar' and usuario and nombre:
+            usuario.nombre = nombre
+            usuario.rol = request.POST.get('rol', usuario.rol)
+            usuario.estado = 'estado' in request.POST
+            usuario.save(update_fields=['nombre', 'rol', 'estado'])
+        elif accion == 'password' and usuario and request.POST.get('password'):
+            usuario.password_hash = make_password(request.POST['password'])
+            usuario.save(update_fields=['password_hash'])
+        else:
+            messages.error(request, 'Datos de usuario invalidos.')
+        return redirect('usuarios')
+    return render(request, 'Usuarios.html', {
+        'usuarios': Usuario.objects.all(), 'roles': Usuario.Rol.choices,
+        'usuario': _current_user(request),
+    })
+
+
+def lotes(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN]):
+        return redirect('inicio')
+    if request.method == 'POST':
+        try:
+            cantidad = _post_decimal(request, 'cantidad')
+            precio = _post_decimal(request, 'precio')
+            minimo = _post_decimal(request, 'minimo', Decimal('0'))
+            if not request.POST.get('nombre_insumo') or precio is None or cantidad is None or cantidad < 0 or precio < 0 or minimo < 0:
+                raise ValueError
+            LoteInsumo.objects.create(
+                codigo_referencia='', nombre_insumo=request.POST['nombre_insumo'].strip(),
+                categoria=request.POST.get('categoria', LoteInsumo.Categoria.OTROS),
+                precio_unitario=precio, cantidad_disponible=cantidad, stock_minimo=minimo,
+                fecha_ingreso=request.POST['ingreso'], fecha_vencimiento=request.POST['vencimiento'],
+            )
+            messages.success(request, 'Lote registrado.')
+        except (KeyError, ValueError, TypeError, ValidationError, IntegrityError):
+            messages.error(request, 'No se pudo registrar el lote. Revise los datos.')
+        return redirect('lotes')
+    return render(request, 'Lotes.html', {
+        'lotes': LoteInsumo.objects.all(), 'categorias': LoteInsumo.Categoria.choices,
+        'usuario': _current_user(request),
+    })
+
+
+def platos(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN]):
+        return redirect('inicio')
+    if request.method == 'POST':
+        accion = request.POST.get('accion')
+        plato = get_object_or_404(Plato, pk=request.POST.get('id')) if request.POST.get('id') else None
+        precio = _post_decimal(request, 'precio')
+        nombre = request.POST.get('nombre', '').strip()
+        if precio is None or precio < 0 or not nombre:
+            messages.error(request, 'Datos del plato invalidos.')
+        elif accion == 'crear':
+            Plato.objects.create(nombre_plato=nombre, precio_venta=precio, categoria=request.POST.get('categoria', ''), estado=True)
+        elif accion == 'editar' and plato:
+            plato.nombre_plato, plato.precio_venta = nombre, precio
+            plato.categoria, plato.estado = request.POST.get('categoria', ''), 'estado' in request.POST
+            plato.save()
+        return redirect('platos')
+    return render(request, 'Platos.html', {'platos': Plato.objects.all(), 'categorias': CATEGORIES, 'usuario': _current_user(request)})
+
+
+def recetas(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN]):
+        return redirect('inicio')
+    if request.method == 'POST':
+        cantidad = _post_decimal(request, 'cantidad')
+        if cantidad is None or cantidad <= 0:
+            messages.error(request, 'La cantidad debe ser mayor que cero.')
+        else:
+            RecetaPlato.objects.update_or_create(
+                plato_id=request.POST.get('plato'), insumo_id=request.POST.get('insumo'),
+                defaults={'cantidad_requerida': cantidad},
+            )
+        return redirect('recetas')
+    return render(request, 'Recetas.html', {'recetas': RecetaPlato.objects.select_related('plato', 'insumo'), 'platos': Plato.objects.all(), 'lotes': LoteInsumo.objects.all(), 'usuario': _current_user(request)})
+
+
+def reportes(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN, Usuario.Rol.CAJERO]):
+        return redirect('inicio')
+    return render(request, 'Reportes.html', {'ventas': Factura.objects.filter(estado=Factura.Estado.PAGADA), 'usuario': _current_user(request)})
+
+
+def reporte_excel(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN, Usuario.Rol.CAJERO]):
+        return redirect('inicio')
+    try:
+        from openpyxl import Workbook
+    except ImportError:
+        return HttpResponse('Dependencia openpyxl no instalada.', status=503)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(['Factura', 'Fecha', 'Cliente', 'Subtotal', 'Impuesto', 'Total', 'Metodo'])
+    for factura in Factura.objects.filter(estado=Factura.Estado.PAGADA):
+        sheet.append([factura.numero, factura.fecha_hora.strftime('%Y-%m-%d %H:%M'), factura.cliente, float(factura.subtotal), float(factura.impuesto), float(factura.total), factura.get_metodo_pago_display()])
+    response = HttpResponse(content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = 'attachment; filename=ventas.xlsx'
+    workbook.save(response)
+    return response
+
+
+def reporte_pdf(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN, Usuario.Rol.CAJERO]):
+        return redirect('inicio')
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+    except ImportError:
+        return HttpResponse('Dependencia reportlab no instalada.', status=503)
+    response = HttpResponse(content_type='application/pdf')
+    response['Content-Disposition'] = 'attachment; filename=ventas.pdf'
+    documento = canvas.Canvas(response, pagesize=letter)
+    y = 750
+    documento.drawString(50, y, 'MarioBRos - Reporte de ventas')
+    for factura in Factura.objects.filter(estado=Factura.Estado.PAGADA)[:35]:
+        y -= 18
+        documento.drawString(50, y, f'{factura.numero} | {factura.cliente[:20]} | ${factura.total:,.2f}')
+    documento.save()
+    return response
+
+
+def api_resumen(request):
+    if not _current_user(request):
+        return JsonResponse({'detail': 'No autorizado'}, status=401)
+    return JsonResponse({
+        'ventas': float(sum((f.total for f in Factura.objects.filter(estado=Factura.Estado.PAGADA)), Decimal('0'))),
+        'pendientes': Factura.objects.filter(estado=Factura.Estado.PENDIENTE).count(),
+        'valor_inventario': float(sum((l.cantidad_disponible * l.precio_unitario for l in LoteInsumo.objects.all()), Decimal('0'))),
+    })
+
+
+def vista_admin(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN]):
+        return redirect('iniciar_sesion')
+    if request.method == 'POST':
+        accion = request.POST.get('accion')
+        lote = get_object_or_404(LoteInsumo, pk=request.POST.get('lote_id')) if request.POST.get('lote_id') else None
+        cantidad = _post_decimal(request, 'cantidad')
+        if not lote or cantidad is None or cantidad < 0:
+            messages.error(request, 'Cantidad o lote invalido.')
+        elif accion == 'stock':
+            lote.cantidad_disponible += cantidad
+            lote.save(update_fields=['cantidad_disponible'])
+            messages.success(request, 'Existencias actualizadas.')
+        elif accion == 'merma':
+            usuario = _current_user(request)
+            if cantidad <= 0 or cantidad > lote.cantidad_disponible or not usuario:
+                messages.error(request, 'Cantidad de merma invalida.')
+            else:
+                lote.cantidad_disponible -= cantidad
+                lote.save(update_fields=['cantidad_disponible'])
+                AjusteMerma.objects.create(
+                    lote=lote, usuario=usuario, cantidad=cantidad,
+                    motivo=request.POST.get('motivo', AjusteMerma.Motivo.DESPERDICIO),
+                    observacion=request.POST.get('observacion', '').strip(),
+                )
+                messages.success(request, 'Merma registrada y auditada.')
+        return redirect('vista_admin')
+    q = request.GET.get('q', '').strip()
+    categoria = request.GET.get('categoria', '').strip()
+    inventario = _inventory_data()
+    if q:
+        inventario = [item for item in inventario if q.lower() in item['plato'].nombre_plato.lower()]
+    if categoria:
+        inventario = [item for item in inventario if item['plato'].categoria.lower() == categoria.lower()]
+    lotes = LoteInsumo.objects.all()
+    return render(request, 'Inventario.html', {
+        'inventario': inventario, 'lotes': lotes,
+        'platos_activos': len(inventario),
+        'porciones_totales': sum(item['porciones'] for item in inventario),
+        'stock_bajo': sum(l.cantidad_disponible <= l.stock_minimo for l in lotes),
+        'agotados': sum(item['estado'] == 'Agotado' for item in inventario),
+        'lotes_vencer': sum(l.fecha_vencimiento <= timezone.localdate() + timedelta(days=7) and l.cantidad_disponible > 0 for l in lotes),
+        'valor_inventario': sum((l.cantidad_disponible * l.precio_unitario for l in lotes), Decimal('0')),
+        'q': q, 'categoria': categoria, 'categorias': CATEGORIES,
+    })
+
+
+def vista_mesero(request):
+    if not _has_role(request, [Usuario.Rol.ADMIN, Usuario.Rol.EMPLEADO]):
+        return redirect('inicio')
+    usuario = _current_user(request)
+    if request.method == 'POST':
+        accion = request.POST.get('accion')
+        mesa = request.POST.get('mesa') or request.session.get('mesa_actual')
+        if accion in ('seleccionar', 'seleccionar_mesa'):
+            if mesa and str(mesa).isdigit() and 1 <= int(mesa) <= 10:
+                request.session['mesa_actual'] = str(mesa)
+            else:
+                messages.error(request, 'Mesa invalida.')
+            return redirect('vista_mesero')
+        if accion in ('crear', 'agregar'):
+            plato = get_object_or_404(Plato, pk=request.POST.get('plato_id'), estado=True)
+            cantidad = _safe_int(request.POST.get('cantidad'), maximum=100)
+            comanda = get_object_or_404(Comanda, pk=request.POST.get('comanda_id'), estado=Comanda.Estado.PENDIENTE) if request.POST.get('comanda_id') else Comanda.objects.create(usuario=usuario)
+            detalle = comanda.detalles.filter(plato=plato).first() if accion == 'agregar' else None
+            if detalle:
+                detalle.cantidad += cantidad
+                detalle.comentario = request.POST.get('comentario', detalle.comentario)
+                detalle.save(update_fields=['cantidad', 'comentario'])
+            else:
+                detalle = DetalleComanda.objects.create(
+                    comanda=comanda, plato=plato, cantidad=cantidad,
+                    precio_unitario=plato.precio_venta,
+                    comentario=request.POST.get('comentario') or f'Mesa {mesa or "sin asignar"}',
+                )
+            comanda.total = sum((item.subtotal for item in comanda.detalles.all()), Decimal('0'))
+            comanda.save(update_fields=['total'])
+            return redirect('vista_mesero')
+        comanda = get_object_or_404(Comanda, pk=request.POST.get('comanda_id'))
+        if accion in ('enviar', 'finalizar', 'enviar_facturacion'):
+            try:
+                enviar_comanda(comanda)
+                if not Factura.objects.filter(observacion__icontains=f'Comanda #{comanda.id}').exists():
+                    factura = Factura.objects.create(
+                        usuario=usuario,
+                        cliente=f'Mesa {mesa or "general"}',
+                        subtotal=comanda.total,
+                        impuesto=Decimal('0'),
+                        total=comanda.total,
+                        estado=Factura.Estado.PENDIENTE,
+                        observacion=f'Comanda #{comanda.id}',
+                    )
+                    DetalleFactura.objects.bulk_create([
+                        DetalleFactura(
+                            factura=factura,
+                            descripcion=detalle.plato.nombre_plato,
+                            cantidad=detalle.cantidad,
+                            precio_unitario=detalle.precio_unitario,
+                        )
+                        for detalle in comanda.detalles.select_related('plato').all()
+                    ])
+                messages.success(request, 'Comanda enviada y stock descontado por PEPS/FIFO.')
+            except ValueError as error:
+                messages.error(request, str(error))
+            return redirect('vista_mesero')
+        if accion == 'cancelar':
+            cancelar_comanda(comanda)
+            messages.success(request, 'Comanda cancelada y stock revertido.')
+            return redirect('vista_mesero')
+    comandas = _safe_comandas(20)
+    for comanda in comandas:
+        detalle = comanda.detalles.all()[0] if comanda.detalles.all() else None
+        comanda.mesa_texto = _mesa_label(detalle.comentario if detalle else '')
+    return render(request, 'Comandas.html', {
+        'mesas': range(1, 11), 'mesa_actual': request.session.get('mesa_actual'),
+        'comandas': comandas, 'platos': Plato.objects.filter(estado=True),
+    })
 

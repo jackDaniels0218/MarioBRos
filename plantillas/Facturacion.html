@@ -227,7 +227,25 @@
             .app { flex-direction: column; }
             .sidebar { width: 100%; border-right: none; border-bottom: 1px solid var(--borde); }
             .content { padding: 20px 18px 30px; }
+            .stats { grid-template-columns: repeat(2, minmax(160px, 1fr)); }
+            .topbar { flex-direction: column; align-items: flex-start; gap: 14px; }
+        }
+
+        @media (max-width: 620px) {
             .stats { grid-template-columns: 1fr; }
+            .panel { overflow-x: auto; }
+            .table, thead, tbody, th, td, tr { display: block; }
+            .table thead { display: none; }
+            .table tr { border-bottom: 1px solid var(--borde); padding: 12px 0; }
+            .table td { border: none; padding: 8px 0; }
+            .table td::before {
+                content: attr(data-label);
+                display: block;
+                font-size: 11px;
+                color: var(--muted);
+                text-transform: uppercase;
+                margin-bottom: 4px;
+            }
         }
     </style>
 </head>
@@ -297,15 +315,15 @@
                     <tbody>
                         {% for factura in facturas %}
                         <tr>
-                            <td>{{ factura.numero }}</td>
-                            <td>{{ factura.cliente|default:'Cliente general' }}</td>
-                            <td>{{ factura.fecha_hora|date:'d/m/Y' }}</td>
-                            <td>$ {{ factura.total_display }}</td>
-                            <td>{{ factura.get_metodo_pago_display }}</td>
-                            <td>
+                            <td data-label="Factura">{{ factura.numero }}</td>
+                            <td data-label="Cliente">{{ factura.cliente|default:'Cliente general' }}</td>
+                            <td data-label="Fecha">{{ factura.fecha_hora|date:'d/m/Y' }}</td>
+                            <td data-label="Total">$ {{ factura.total_display }}</td>
+                            <td data-label="Método">{{ factura.get_metodo_pago_display }}</td>
+                            <td data-label="Estado">
                                 <span class="badge {{ factura.estado }}">{{ factura.get_estado_display }}</span>
                             </td>
-                            <td><a class="link" href="{% url 'detalle_factura' factura.id %}">Ver</a></td>
+                            <td data-label="Acción"><a class="link" href="{% url 'detalle_factura' factura.id %}">Ver</a></td>
                         </tr>
                         {% empty %}
                         <tr>

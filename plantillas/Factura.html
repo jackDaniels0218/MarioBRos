@@ -157,6 +157,31 @@
             font-weight: 700;
             text-decoration: none;
         }
+
+        @media (max-width: 900px) {
+            .header { flex-direction: column; }
+            .meta { text-align: left; }
+            .info { grid-template-columns: 1fr; }
+            .totals { width: 100%; }
+        }
+
+        @media (max-width: 560px) {
+            .wrap { padding: 0 12px; }
+            .card { padding: 22px 18px; }
+            table, thead, tbody, th, td, tr { display: block; }
+            thead { display: none; }
+            tr { border-bottom: 1px solid var(--borde); padding: 8px 0; }
+            td { border: none; padding: 8px 0; }
+            td::before {
+                content: attr(data-label);
+                display: block;
+                color: var(--muted);
+                font-size: 11px;
+                letter-spacing: 0.04em;
+                text-transform: uppercase;
+                margin-bottom: 4px;
+            }
+        }
     </style>
 </head>
 <body>
@@ -199,10 +224,10 @@
                 <tbody>
                     {% for detalle in factura.detalles.all %}
                     <tr>
-                        <td>{{ detalle.descripcion }}</td>
-                        <td>{{ detalle.cantidad }}</td>
-                        <td>$ {{ detalle.precio_unitario }}</td>
-                        <td>$ {{ detalle.subtotal }}</td>
+                        <td data-label="Descripción">{{ detalle.descripcion }}</td>
+                        <td data-label="Cantidad">{{ detalle.cantidad }}</td>
+                        <td data-label="Precio unit.">$ {{ detalle.precio_unitario }}</td>
+                        <td data-label="Subtotal">$ {{ detalle.subtotal }}</td>
                     </tr>
                     {% empty %}
                     <tr>

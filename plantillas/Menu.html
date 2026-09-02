@@ -108,6 +108,35 @@
         .empty {
             color: var(--muted);
         }
+
+        @media (max-width: 900px) {
+            .layout {
+                flex-direction: column;
+            }
+            .sidebar {
+                width: 100%;
+                border-right: none;
+                border-bottom: 1px solid var(--borde);
+            }
+            .content {
+                padding: 22px 18px 28px;
+            }
+            .hero {
+                padding: 18px 18px;
+            }
+            h1 {
+                font-size: 26px;
+            }
+        }
+
+        @media (max-width: 560px) {
+            .grid {
+                grid-template-columns: 1fr;
+            }
+            .nav-item {
+                justify-content: center;
+            }
+        }
     </style>
 </head>
 <body>
